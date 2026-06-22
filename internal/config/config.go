@@ -16,7 +16,7 @@ type Config struct {
 	OptimizeStorage      bool          // Strip large attachments
 	TLS                  bool          // Enable HTTPS
 	DevMode              bool          // Enables Flask debug reloader
-
+	ProjectsDir          string        // Default path projects
 }
 
 func Load() Config {
@@ -32,6 +32,10 @@ func Load() Config {
 	config.OptimizeStorage = getEnvAsBool("OPTIMIZE_STORAGE", false)
 	config.TLS = getEnvAsBool("TLS", false)
 	config.DevMode = getEnvAsBool("DEV_MODE", false)
+	config.ProjectsDir = os.Getenv("STATIC_CONTENT_PROJECTS")
+	if config.ProjectsDir == "" {
+		config.ProjectsDir = "/app/projects"
+	}
 
 	return config
 
