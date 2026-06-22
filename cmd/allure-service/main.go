@@ -10,17 +10,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/y-krenta/allure3-docker-service-go/internal/config"
+	"github.com/y-krenta/allure3-docker-service-go/internal/httpapi"
 )
 
 func main() {
 	cfg := config.Load()
-
-	r := chi.NewRouter()
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
-		Handler: r,
+		Handler: httpapi.NewRouter(),
 	}
 
 	log.Printf("Starting server on port %v", cfg.Port)
