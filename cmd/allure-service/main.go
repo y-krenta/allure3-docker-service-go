@@ -16,9 +16,16 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	err := os.MkdirAll(cfg.ProjectsDir, 0755)
+	if err != nil {
+		log.Fatalf("cannot create projects dir %q: %v", cfg.ProjectsDir, err)
+	}
+
+	s := httpapi.NewServer(cfg.ProjectsDir)
 	srv := &http.Server{
 		Addr:    ":" + cfg.Port,
-		Handler: httpapi.NewRouter(),
+		Handler: s.Routes(),
 	}
 
 	log.Printf("Starting server on port %v", cfg.Port)
