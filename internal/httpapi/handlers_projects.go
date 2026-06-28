@@ -3,14 +3,20 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
 type createProjectRequest struct {
 	ProjectID string `json:"project_id"`
+}
+
+type listProjectsResponse struct {
+	Projects []string `json:"projects"`
 }
 
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -42,17 +48,43 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	entries, err := os.ReadDir(s.projectsDir)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	var ids []string
+	ids := make([]string, 0)
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if entry.IsDir() {
 			ids = append(ids, entry.Name())
 		}
 
 	}
+
+	resp := listProjectsResponse{Projects: ids}
+	encoder := json.NewEncoder(w)
+	errEncoding := encoder.Encode(resp)
+	if errEncoding != nil {
+		slog.Error("failed to encode response: ", "error", errEncoding)
+		return
+	}
+}
+
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	errValidation := projects.ValidateProjectID(id)
+	if errValidation != nil {
+		http.Error(w, errValidation.Error(), http.StatusBadRequest)
+		return
+	}
+	err := os.RemoveAll(filepath.Join(s.projectsDir, id))
+	if err != nil {
+		slog.Error("failed to delete project", "error", err, "project_id", id)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -2,22 +2,20 @@ package httpapi
 
 import (
 	"net/http"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 )
 
 var (
-	projectsDir    = "/projects"
-	healthEndpoint = "/health"
+	projectsEndpoint = "/projects"
+	healthEndpoint   = "/health"
 )
 
 func (s *Server) Routes() http.Handler {
-	r := chi.NewRouter()
-	r.Use(middleware.RequestID, middleware.Logger, middleware.Recoverer)
-	r.Get(healthEndpoint, s.healthCheck)
-	r.Get(projectsDir, s.listProjects)
-	r.Post(projectsDir, s.createProject)
+	r := http.NewServeMux()
+
+	r.HandleFunc("GET "+healthEndpoint, s.healthCheck)
+	r.HandleFunc("GET "+projectsEndpoint, s.listProjects)
+	r.HandleFunc("POST "+projectsEndpoint, s.createProject)
+	r.HandleFunc("DELETE "+projectsEndpoint+"/{id}", s.deleteProject)
 	return r
 }
 
