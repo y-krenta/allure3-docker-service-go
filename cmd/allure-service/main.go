@@ -24,8 +24,12 @@ func main() {
 
 	s := httpapi.NewServer(cfg.ProjectsDir)
 	srv := &http.Server{
-		Addr:    ":" + cfg.Port,
-		Handler: s.Routes(),
+		Addr:              ":" + cfg.Port,
+		Handler:           s.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	log.Printf("Starting server on port %v", cfg.Port)
