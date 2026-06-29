@@ -19,7 +19,7 @@ func (s *Server) Routes() http.Handler {
 	return r
 }
 
-func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
+func (s *Server) healthCheck(w http.ResponseWriter, _ *http.Request) {
 	_, err := w.Write([]byte("service is ok\n"))
 	if err != nil {
 		return
