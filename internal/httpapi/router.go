@@ -16,7 +16,7 @@ func (s *Server) Routes() http.Handler {
 	r.HandleFunc("GET "+projectsEndpoint, s.listProjects)
 	r.HandleFunc("POST "+projectsEndpoint, s.createProject)
 	r.HandleFunc("DELETE "+projectsEndpoint+"/{id}", s.deleteProject)
-	return r
+	return recoverer(r)
 }
 
 func (s *Server) healthCheck(w http.ResponseWriter, _ *http.Request) {
