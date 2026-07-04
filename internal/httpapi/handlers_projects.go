@@ -19,6 +19,10 @@ type listProjectsResponse struct {
 	Projects []string `json:"projects"`
 }
 
+type projectBuildsResponse struct {
+	Builds []string `json:"builds"`
+}
+
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	var req createProjectRequest
 
@@ -87,4 +91,47 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	errValidation := projects.ValidateProjectID(id)
+	if errValidation != nil {
+		http.Error(w, errValidation.Error(), http.StatusBadRequest)
+		return
+	}
+	projectPath := filepath.Join(s.projectsDir, id)
+	_, errStat := os.Stat(projectPath)
+	if errors.Is(errStat, os.ErrNotExist) {
+		http.Error(w, "project not found", http.StatusNotFound)
+		return
+	} else if errStat != nil {
+		slog.Error("failed to stat project path", "error", errStat, "path", projectPath)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	builds := make([]string, 0)
+
+	buildsPath := projects.ReportsDir(s.projectsDir, id)
+	entries, err := os.ReadDir(buildsPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		slog.Error("failed to read dir", "error", err, "path", buildsPath)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			builds = append(builds, entry.Name())
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	resp := projectBuildsResponse{Builds: builds}
+
+	err = json.NewEncoder(w).Encode(resp)
+	if err != nil {
+		slog.Error("failed to encode response", "error", err)
+		return
+	}
+
 }
