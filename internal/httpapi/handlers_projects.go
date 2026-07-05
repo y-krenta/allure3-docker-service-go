@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
@@ -53,6 +54,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	search := strings.ToLower(r.URL.Query().Get("search"))
 	entries, err := os.ReadDir(s.projectsDir)
 	if err != nil {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -62,9 +64,11 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	ids := make([]string, 0)
 	for _, entry := range entries {
 		if entry.IsDir() {
-			ids = append(ids, entry.Name())
+			name := strings.ToLower(entry.Name())
+			if strings.Contains(name, search) {
+				ids = append(ids, entry.Name())
+			}
 		}
-
 	}
 
 	resp := listProjectsResponse{Projects: ids}
