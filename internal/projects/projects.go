@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	projectIDPattern = regexp.MustCompile(`^[a-z0-9_-]+$`)
+	projectIDPattern = regexp.MustCompile(`^[a-z\d]([a-z\d _-]*[a-z\d])?$`)
 	ErrProjectExists = errors.New("project already exists")
 )
 
@@ -37,7 +37,7 @@ func ValidateProjectID(id string) error {
 		return errors.New("project id must not exceed 200 characters")
 	}
 	if !projectIDPattern.MatchString(id) {
-		return errors.New("project id must match ^[a-z0-9_-]+$")
+		return errors.New(`project id must match ^[a-z\d]([a-z\d _-]*[a-z\d])?$`)
 	}
 
 	return nil
