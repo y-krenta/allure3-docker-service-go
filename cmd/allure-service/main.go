@@ -12,14 +12,26 @@ import (
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/config"
 	"github.com/y-krenta/allure3-docker-service-go/internal/httpapi"
+	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
 func main() {
 	cfg := config.Load()
+	pathDefaultLatestReportDir := projects.LatestReportDir(cfg.ProjectsDir, projects.DefaultProjectID)
+	pathDefaultResultDir := projects.ResultsDir(cfg.ProjectsDir, projects.DefaultProjectID)
 
 	err := os.MkdirAll(cfg.ProjectsDir, 0755)
 	if err != nil {
 		log.Fatalf("cannot create projects dir %q: %v", cfg.ProjectsDir, err)
+	}
+
+	err = os.MkdirAll(pathDefaultLatestReportDir, 0755)
+	if err != nil {
+		log.Fatalf("cannot create default latest report dir %q: %v", pathDefaultLatestReportDir, err)
+	}
+	err = os.MkdirAll(pathDefaultResultDir, 0755)
+	if err != nil {
+		log.Fatalf("cannot create default result dir %q: %v", pathDefaultResultDir, err)
 	}
 
 	s := httpapi.NewServer(cfg.ProjectsDir)

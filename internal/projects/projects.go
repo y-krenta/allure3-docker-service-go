@@ -15,6 +15,10 @@ var (
 	ErrProjectExists = errors.New("project already exists")
 )
 
+const (
+	DefaultProjectID = "default"
+)
+
 func ResultsDir(baseDir, projectID string) string {
 	return filepath.Join(baseDir, projectID, "results")
 
