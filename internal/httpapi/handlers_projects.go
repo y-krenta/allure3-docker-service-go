@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
@@ -103,6 +105,13 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	type buildEntry struct {
+		Name string
+		When time.Time
+	}
+
+	var items []buildEntry
+
 	id := r.PathValue("id")
 	errValidation := projects.ValidateProjectID(id)
 	if errValidation != nil {
@@ -129,9 +138,33 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
-			builds = append(builds, entry.Name())
+		if !entry.IsDir() {
+			continue
 		}
+		pathToIndex := filepath.Join(buildsPath, entry.Name(), "index.html")
+		info, errStatIndex := os.Stat(pathToIndex)
+		if errStatIndex != nil {
+			if errors.Is(errStatIndex, os.ErrNotExist) {
+				continue
+			}
+			slog.Error("failed to stat index file", "error", errStatIndex, "path", pathToIndex)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		items = append(items, buildEntry{Name: entry.Name(), When: info.ModTime()})
+
+	}
+	cmp := func(a, b buildEntry) int {
+		return b.When.Compare(a.When)
+	}
+	slices.SortFunc(items, cmp)
+	for _, item := range items {
+		if item.Name == "latest" {
+			builds = append([]string{item.Name}, builds...)
+		} else {
+			builds = append(builds, item.Name)
+		}
+
 	}
 
 	w.Header().Set("Content-Type", "application/json")
