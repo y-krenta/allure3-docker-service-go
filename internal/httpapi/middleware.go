@@ -9,10 +9,17 @@ import (
 	"github.com/google/uuid"
 )
 
+// contextKey is a private type for request-context keys, so this package's
+// keys can never collide with keys set by other packages.
 type contextKey string
 
+// requestIDKey is the context key under which requestID stores the
+// per-request UUID.
 const requestIDKey contextKey = `request_id`
 
+// recoverer catches panics from the wrapped handler, logs them and responds
+// with 500 instead of letting the connection die uncleanly. Should be the
+// outermost middleware so it can catch panics from everything inside it.
 func recoverer(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -26,16 +33,21 @@ func recoverer(next http.Handler) http.Handler {
 	})
 }
 
+// statusRecorder wraps a ResponseWriter to capture the status code written,
+// so logger can log it after the handler has already written the response.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
 }
 
+// WriteHeader records code before delegating to the wrapped ResponseWriter.
 func (rec *statusRecorder) WriteHeader(code int) {
 	rec.status = code
 	rec.ResponseWriter.WriteHeader(code)
 }
 
+// logger logs one line per request: method, path, status, request ID and
+// duration. Relies on requestID having already populated the context.
 func logger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -52,6 +64,8 @@ func logger(next http.Handler) http.Handler {
 
 }
 
+// requestID generates a UUIDv7 per request, stores it in the request
+// context under requestIDKey and echoes it back as the X-Request-ID header.
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.NewV7()

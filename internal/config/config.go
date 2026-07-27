@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+// Config holds runtime configuration loaded from environment variables.
+// Use Load to obtain a populated instance; the zero value is not meaningful.
 type Config struct {
 	Port                 string        // Flask/Waitress listen port
 	SecurityEnable       bool          // Enable JWT auth
@@ -19,6 +21,10 @@ type Config struct {
 	ProjectsDir          string        // Default path projects
 }
 
+// Load reads configuration from environment variables, applying defaults
+// for any that are unset (see the Config field comments for the env var
+// names and defaults). It never fails; invalid values fall back to defaults
+// with a logged warning.
 func Load() Config {
 	var config Config
 	config.Port = os.Getenv("PORT")
@@ -41,6 +47,8 @@ func Load() Config {
 
 }
 
+// getEnvAsBool parses the env var key as a bool, returning defaultValue if
+// it is unset or fails to parse.
 func getEnvAsBool(key string, defaultValue bool) bool {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -54,6 +62,8 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	return val
 }
 
+// getEnvAsInt parses the env var key as a non-negative int, returning
+// defaultValue if it is unset, fails to parse, or is negative.
 func getEnvAsInt(key string, defaultValue int) int {
 	raw := os.Getenv(key)
 	if raw == "" {
@@ -74,6 +84,9 @@ func getEnvAsInt(key string, defaultValue int) int {
 	return val
 }
 
+// getEnvAsDurationSeconds parses the env var key as a whole number of
+// seconds and returns it as a time.Duration, returning defaultValue if it
+// is unset, fails to parse, or is not positive.
 func getEnvAsDurationSeconds(key string, defaultValue time.Duration) time.Duration {
 	v := os.Getenv(key)
 	if v == "" {

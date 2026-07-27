@@ -14,18 +14,25 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
+// createProjectRequest is the JSON body expected by createProject.
 type createProjectRequest struct {
 	ProjectID string `json:"project_id"`
 }
 
+// listProjectsResponse is the JSON body returned by listProjects.
 type listProjectsResponse struct {
 	Projects []string `json:"projects"`
 }
 
+// projectBuildsResponse is the JSON body returned by getProject.
 type projectBuildsResponse struct {
 	Builds []string `json:"builds"`
 }
 
+// createProject handles POST /projects. Body: createProjectRequest. On
+// success responds 201 with no body. Responds 400 for an invalid body or a
+// project_id that fails projects.ValidateProjectID, 409 if the project
+// already exists.
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	var req createProjectRequest
 
@@ -54,6 +61,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// listProjects handles GET /projects. The optional "search" query param
+// filters project IDs by a case-insensitive substring match. Responds 200
+// with listProjectsResponse.
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	search := strings.ToLower(r.URL.Query().Get("search"))
@@ -82,6 +92,10 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// deleteProject handles DELETE /projects/{id}. Removes the project
+// directory recursively. Responds 204 on success, 400 if id fails
+// projects.ValidateProjectID, 403 for the reserved default project
+// (projects.DefaultProjectID).
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
@@ -104,7 +118,14 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// getProject handles GET /projects/{id}. Lists the project's builds: report
+// subdirectories that contain an index.html, sorted by that file's mtime
+// descending, with "latest" always pinned first. Responds 200 with
+// projectBuildsResponse, 400 if id fails projects.ValidateProjectID, 404 if
+// the project directory doesn't exist.
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
+	// buildEntry pairs a build directory name with its index.html mtime,
+	// used only to sort builds before the response is assembled.
 	type buildEntry struct {
 		Name string
 		When time.Time
