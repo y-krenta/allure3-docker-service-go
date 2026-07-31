@@ -51,13 +51,13 @@ func LatestReportDir(baseDir, projectID string) string {
 // length limit, returning a descriptive error if either check fails.
 func ValidateProjectID(id string) error {
 	if id == "" {
-		return errors.New("project id is required")
+		return errors.New("project ID is required")
 	}
 	if len(id) > 200 {
-		return errors.New("project id must not exceed 200 characters")
+		return errors.New("project ID must not exceed 200 characters")
 	}
 	if !projectIDPattern.MatchString(id) {
-		return errors.New(`project id must match ^[a-z\d]([a-z\d _-]*[a-z\d])?$`)
+		return errors.New(`project ID may contain only lowercase letters, digits, spaces, underscores (_), and hyphens (-), and must start and end with a letter or digit`)
 	}
 
 	return nil

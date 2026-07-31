@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -69,6 +70,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	search := strings.ToLower(r.URL.Query().Get("search"))
 	entries, err := os.ReadDir(s.projectsDir)
 	if err != nil {
+		slog.Error("error read dir", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -87,7 +89,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	encoder := json.NewEncoder(w)
 	errEncoding := encoder.Encode(resp)
 	if errEncoding != nil {
-		slog.Error("failed to encode response: ", "error", errEncoding)
+		slog.Error("failed to encode response: ", "err", errEncoding)
 		return
 	}
 }
@@ -111,7 +113,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	}
 	err := os.RemoveAll(filepath.Join(s.projectsDir, id))
 	if err != nil {
-		slog.Error("failed to delete project", "error", err, "project_id", id)
+		slog.Error("failed to delete project", "err", err, "project_id", id)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -145,7 +147,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project not found", http.StatusNotFound)
 		return
 	} else if errStat != nil {
-		slog.Error("failed to stat project path", "error", errStat, "path", projectPath)
+		slog.Error("failed to stat project path", "err", errStat, "path", projectPath)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -154,7 +156,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	buildsPath := projects.ReportsDir(s.projectsDir, id)
 	entries, err := os.ReadDir(buildsPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		slog.Error("failed to read dir", "error", err, "path", buildsPath)
+		slog.Error("failed to read dir", "err", err, "path", buildsPath)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
@@ -168,7 +170,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 			if errors.Is(errStatIndex, os.ErrNotExist) {
 				continue
 			}
-			slog.Error("failed to stat index file", "error", errStatIndex, "path", pathToIndex)
+			slog.Error("failed to stat index file", "err", errStatIndex, "path", pathToIndex)
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
@@ -193,8 +195,29 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 
 	err = json.NewEncoder(w).Encode(resp)
 	if err != nil {
-		slog.Error("failed to encode response", "error", err)
+		slog.Error("failed to encode response", "err", err)
 		return
 	}
+
+}
+
+func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	reportPath := r.PathValue("path")
+	reportPath = path.Clean(reportPath)
+
+	if reportPath == "." {
+		http.Error(w, "path empty", http.StatusBadRequest)
+		return
+	}
+	err := projects.ValidateProjectID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rootDir := os.DirFS(projects.ReportsDir(s.projectsDir, id))
+
+	http.ServeFileFS(w, r, rootDir, reportPath)
 
 }
