@@ -1,0 +1,418 @@
+package httpapi
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
+)
+
+// writeBuild creates <projectsDir>/<id>/reports/<build>/index.html and stamps
+// it with modTime, so getProject has something to sort.
+func writeBuild(t *testing.T, dir, id, build string, modTime time.Time) string {
+	t.Helper()
+
+	buildDir := filepath.Join(projects.ReportsDir(dir, id), build)
+	if err := os.MkdirAll(buildDir, 0755); err != nil {
+		t.Fatalf("mkdir %q: %v", buildDir, err)
+	}
+
+	index := filepath.Join(buildDir, "index.html")
+	if err := os.WriteFile(index, []byte("<h1>"+build+"</h1>"), 0644); err != nil {
+		t.Fatalf("write %q: %v", index, err)
+	}
+	if err := os.Chtimes(index, modTime, modTime); err != nil {
+		t.Fatalf("chtimes %q: %v", index, err)
+	}
+
+	return buildDir
+}
+
+// callWithPath invokes h with the given path values set, the way ServeMux
+// would have filled them in from the route pattern.
+func callWithPath(h http.HandlerFunc, method, target string, body io.Reader, pathValues map[string]string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(method, target, body)
+	for k, v := range pathValues {
+		r.SetPathValue(k, v)
+	}
+
+	w := httptest.NewRecorder()
+	h(w, r)
+
+	return w
+}
+
+func TestCreateProject(t *testing.T) {
+	t.Run("creates the project tree", func(t *testing.T) {
+		s, dir := newTestServer(t)
+
+		w := callWithPath(s.createProject, http.MethodPost, "/projects", strings.NewReader(`{"project_id":"demo"}`), nil)
+
+		if w.Code != http.StatusCreated {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusCreated, w.Body)
+		}
+		if info, err := os.Stat(projects.ResultsDir(dir, "demo")); err != nil || !info.IsDir() {
+			t.Errorf("results dir missing: stat err = %v", err)
+		}
+	})
+
+	t.Run("rejects a malformed body", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.createProject, http.MethodPost, "/projects", strings.NewReader(`{"project_id":`), nil)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("rejects an invalid project id", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.createProject, http.MethodPost, "/projects", strings.NewReader(`{"project_id":"BAD ID!"}`), nil)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("existing project conflicts", func(t *testing.T) {
+		s, _ := newTestServer(t, "demo")
+
+		w := callWithPath(s.createProject, http.MethodPost, "/projects", strings.NewReader(`{"project_id":"demo"}`), nil)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusConflict)
+		}
+	})
+}
+
+func TestListProjects(t *testing.T) {
+	decode := func(t *testing.T, w *httptest.ResponseRecorder) listProjectsResponse {
+		t.Helper()
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
+		}
+		var got listProjectsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode %q: %v", w.Body, err)
+		}
+
+		return got
+	}
+
+	t.Run("empty dir returns an empty array, not null", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.listProjects, http.MethodGet, "/projects", nil, nil)
+
+		if got := decode(t, w); len(got.Projects) != 0 {
+			t.Fatalf("projects = %v, want empty", got.Projects)
+		}
+		if body := strings.TrimSpace(w.Body.String()); body != `{"projects":[]}` {
+			t.Errorf("body = %s, want an empty JSON array", body)
+		}
+	})
+
+	t.Run("lists directories only", func(t *testing.T) {
+		s, dir := newTestServer(t, "alpha", "beta")
+		if err := os.WriteFile(filepath.Join(dir, "stray.txt"), nil, 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := callWithPath(s.listProjects, http.MethodGet, "/projects", nil, nil)
+
+		got := decode(t, w)
+		if len(got.Projects) != 2 {
+			t.Fatalf("projects = %v, want alpha and beta only", got.Projects)
+		}
+	})
+
+	t.Run("search matches case-insensitively", func(t *testing.T) {
+		s, _ := newTestServer(t, "alpha", "beta", "alphabet")
+
+		w := callWithPath(s.listProjects, http.MethodGet, "/projects?search=ALPHA", nil, nil)
+
+		got := decode(t, w)
+		if len(got.Projects) != 2 {
+			t.Fatalf("projects = %v, want the two alpha* projects", got.Projects)
+		}
+		for _, id := range got.Projects {
+			if !strings.Contains(id, "alpha") {
+				t.Errorf("projects contain %q, which does not match the search", id)
+			}
+		}
+	})
+
+	t.Run("unreadable projects dir is a server error", func(t *testing.T) {
+		s := NewServer(filepath.Join(t.TempDir(), "does-not-exist"))
+
+		w := callWithPath(s.listProjects, http.MethodGet, "/projects", nil, nil)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+		}
+	})
+}
+
+func TestDeleteProject(t *testing.T) {
+	t.Run("removes the project", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+
+		w := callWithPath(s.deleteProject, http.MethodDelete, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNoContent, w.Body)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "demo")); !os.IsNotExist(err) {
+			t.Errorf("project dir still there (stat err = %v)", err)
+		}
+	})
+
+	t.Run("default project is protected", func(t *testing.T) {
+		s, dir := newTestServer(t, projects.DefaultProjectID)
+
+		w := callWithPath(s.deleteProject, http.MethodDelete, "/projects/default", nil, map[string]string{"id": projects.DefaultProjectID})
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusForbidden)
+		}
+		if _, err := os.Stat(filepath.Join(dir, projects.DefaultProjectID)); err != nil {
+			t.Errorf("default project was touched: stat err = %v", err)
+		}
+	})
+
+	t.Run("rejects an invalid project id", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.deleteProject, http.MethodDelete, "/projects/BADID", nil, map[string]string{"id": "BADID"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("deleting an unknown project succeeds", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.deleteProject, http.MethodDelete, "/projects/nosuch", nil, map[string]string{"id": "nosuch"})
+
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+	})
+}
+
+func TestGetProject(t *testing.T) {
+	builds := func(t *testing.T, w *httptest.ResponseRecorder) []string {
+		t.Helper()
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
+		}
+		var got projectBuildsResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode %q: %v", w.Body, err)
+		}
+
+		return got.Builds
+	}
+
+	t.Run("sorts by index.html mtime with latest pinned first", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		now := time.Now()
+		writeBuild(t, dir, "demo", "1", now.Add(-3*time.Hour))
+		writeBuild(t, dir, "demo", "2", now.Add(-1*time.Hour))
+		writeBuild(t, dir, "demo", "latest", now.Add(-2*time.Hour))
+
+		w := callWithPath(s.getProject, http.MethodGet, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		got := builds(t, w)
+		want := []string{"latest", "2", "1"}
+		if len(got) != len(want) {
+			t.Fatalf("builds = %v, want %v", got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("builds = %v, want %v", got, want)
+			}
+		}
+	})
+
+	t.Run("skips build dirs without index.html", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "good", time.Now())
+		if err := os.MkdirAll(filepath.Join(projects.ReportsDir(dir, "demo"), "empty"), 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := callWithPath(s.getProject, http.MethodGet, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		got := builds(t, w)
+		if len(got) != 1 || got[0] != "good" {
+			t.Fatalf("builds = %v, want [good]", got)
+		}
+	})
+
+	t.Run("skips files sitting next to build dirs", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "good", time.Now())
+		if err := os.WriteFile(filepath.Join(projects.ReportsDir(dir, "demo"), "stray.txt"), nil, 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := callWithPath(s.getProject, http.MethodGet, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		if got := builds(t, w); len(got) != 1 {
+			t.Fatalf("builds = %v, want [good]", got)
+		}
+	})
+
+	t.Run("project without a reports dir returns an empty array", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, "demo"), 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		s := NewServer(dir)
+
+		w := callWithPath(s.getProject, http.MethodGet, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		if got := builds(t, w); len(got) != 0 {
+			t.Fatalf("builds = %v, want empty", got)
+		}
+		if body := strings.TrimSpace(w.Body.String()); body != `{"builds":[]}` {
+			t.Errorf("body = %s, want an empty JSON array", body)
+		}
+	})
+
+	t.Run("unknown project is not found", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.getProject, http.MethodGet, "/projects/nosuch", nil, map[string]string{"id": "nosuch"})
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("rejects an invalid project id", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.getProject, http.MethodGet, "/projects/BADID", nil, map[string]string{"id": "BADID"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+}
+
+func TestServeProjectReport(t *testing.T) {
+	t.Run("serves a report file", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "latest", time.Now())
+		if err := os.WriteFile(filepath.Join(projects.ReportsDir(dir, "demo"), "latest", "app.js"), []byte("var x=1"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/latest/app.js", nil,
+			map[string]string{"id": "demo", "path": "latest/app.js"})
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
+		}
+		if got := w.Body.String(); got != "var x=1" {
+			t.Errorf("body = %q, want the file content", got)
+		}
+	})
+
+	t.Run("directory path serves its index.html", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "latest", time.Now())
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/latest/", nil,
+			map[string]string{"id": "demo", "path": "latest/"})
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
+		}
+		if got := w.Body.String(); got != "<h1>latest</h1>" {
+			t.Errorf("body = %q, want the index.html content", got)
+		}
+	})
+
+	// net/http redirects an explicit ".../index.html" to "./" before serving,
+	// so clients that request the file by name pay an extra round trip.
+	t.Run("explicit index.html redirects to the directory", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "latest", time.Now())
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/latest/index.html", nil,
+			map[string]string{"id": "demo", "path": "latest/index.html"})
+
+		if w.Code != http.StatusMovedPermanently {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusMovedPermanently)
+		}
+		if got := w.Header().Get("Location"); got != "./" {
+			t.Errorf("Location = %q, want %q", got, "./")
+		}
+	})
+
+	t.Run("empty path is rejected", func(t *testing.T) {
+		s, _ := newTestServer(t, "demo")
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/", nil,
+			map[string]string{"id": "demo", "path": ""})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("rejects an invalid project id", func(t *testing.T) {
+		s, _ := newTestServer(t)
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/BADID/reports/index.html", nil,
+			map[string]string{"id": "BADID", "path": "index.html"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("missing file is not found", func(t *testing.T) {
+		s, _ := newTestServer(t, "demo")
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/latest/nope.html", nil,
+			map[string]string{"id": "demo", "path": "latest/nope.html"})
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
+		}
+	})
+
+	t.Run("does not serve files outside the reports dir", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		secret := filepath.Join(dir, "secret.txt")
+		if err := os.WriteFile(secret, []byte("top secret"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/../../secret.txt", nil,
+			map[string]string{"id": "demo", "path": "../../secret.txt"})
+
+		if w.Code == http.StatusOK {
+			t.Fatalf("status = 200, want a refusal (body: %s)", w.Body)
+		}
+		if strings.Contains(w.Body.String(), "top secret") {
+			t.Errorf("response leaked the file content: %s", w.Body)
+		}
+	})
+}
