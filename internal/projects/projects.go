@@ -15,6 +15,10 @@ var (
 	// ends with a lowercase letter or digit, letters/digits/space/_/-
 	// allowed in between.
 	projectIDPattern = regexp.MustCompile(`^[a-z\d]([a-z\d _-]*[a-z\d])?$`)
+	// resultFileNamePattern is the allowed shape for an uploaded result file
+	// name: ASCII letters, digits, dot, underscore and hyphen. Covers every
+	// name Allure generates (<uuid>-result.json, environment.properties, ...).
+	resultFileNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 	// ErrProjectExists is returned by CreateDir when the project directory
 	// already exists.
 	ErrProjectExists = errors.New("project already exists")
@@ -101,4 +105,35 @@ func CreateDir(baseDir, id string) error {
 	ok = true
 
 	return nil
+}
+
+// SanitizeResultFileName reduces a client-supplied file name to a single
+// path element safe to create inside a project's results directory.
+//
+// Any directory part is stripped. The remaining name is rejected if it is a
+// directory reference ("." or ".."), longer than 255 bytes, or contains
+// anything outside ASCII letters, digits, ".", "_" and "-":
+//
+//	SanitizeResultFileName("8f2c-result.json")  // "8f2c-result.json", nil
+//	SanitizeResultFileName("../../etc/passwd")  // "passwd", nil
+//	SanitizeResultFileName("..")                // "", unsafe file name ".."
+//	SanitizeResultFileName("rep ort.json")      // "", invalid character in file name
+//
+// The returned error describes the reason and is safe to show to the client.
+func SanitizeResultFileName(name string) (string, error) {
+	name = filepath.Base(name)
+	switch name {
+	case "", ".", "..", string(filepath.Separator):
+		return "", fmt.Errorf("unsafe file name %q", name)
+
+	}
+
+	if len(name) > 255 {
+		return "", fmt.Errorf("file name too long: %d bytes", len(name))
+	}
+	if !resultFileNamePattern.MatchString(name) {
+		return "", fmt.Errorf("invalid character in file name: %q", name)
+	}
+
+	return name, nil
 }

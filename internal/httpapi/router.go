@@ -22,6 +22,7 @@ func (s *Server) Routes() http.Handler {
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}", s.getProject)
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}/reports/{path...}", s.serveProjectReport)
 	r.HandleFunc("POST "+projectsEndpoint, s.createProject)
+	r.HandleFunc("POST "+projectsEndpoint+"/{id}/results", s.sendResults)
 	r.HandleFunc("DELETE "+projectsEndpoint+"/{id}", s.deleteProject)
 	return recoverer(requestID(logger(r)))
 }
