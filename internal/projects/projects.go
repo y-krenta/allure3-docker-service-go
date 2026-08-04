@@ -110,14 +110,10 @@ func CreateDir(baseDir, id string) error {
 // SanitizeResultFileName reduces a client-supplied file name to a single
 // path element safe to create inside a project's results directory.
 //
-// Any directory part is stripped. The remaining name is rejected if it is a
-// directory reference ("." or ".."), longer than 255 bytes, or contains
-// anything outside ASCII letters, digits, ".", "_" and "-":
-//
-//	SanitizeResultFileName("8f2c-result.json")  // "8f2c-result.json", nil
-//	SanitizeResultFileName("../../etc/passwd")  // "passwd", nil
-//	SanitizeResultFileName("..")                // "", unsafe file name ".."
-//	SanitizeResultFileName("rep ort.json")      // "", invalid character in file name
+// Any directory part is stripped silently, so "a/b/x.json" becomes "x.json".
+// The remaining name is rejected if it is a directory reference ("." or ".."),
+// longer than 255 bytes, or contains anything outside ASCII letters, digits,
+// ".", "_" and "-".
 //
 // The returned error describes the reason and is safe to show to the client.
 func SanitizeResultFileName(name string) (string, error) {
