@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
@@ -20,11 +21,51 @@ type sendResultsResponse struct {
 	Count int      `json:"processed_files_count"`
 }
 
+// idleTimeoutBody wraps a request body and pushes the connection's read
+// deadline forward on every read, so the deadline bounds the pause between
+// chunks rather than the whole upload: a slow but progressing client keeps
+// going, a client that goes silent is cut off after idle. Callers must only
+// wrap the body once the ResponseWriter is known to support read deadlines,
+// otherwise every read fails.
+type idleTimeoutBody struct {
+	io.ReadCloser
+	rc   *http.ResponseController
+	idle time.Duration
+}
+
+// Read moves the read deadline idle into the future and then reads from the
+// wrapped body, passing its result through unchanged.
+func (b *idleTimeoutBody) Read(p []byte) (int, error) {
+	err := b.rc.SetReadDeadline(time.Now().Add(b.idle))
+	if err != nil {
+		return 0, err
+	}
+	return b.ReadCloser.Read(p)
+}
+
 // sendResults accepts multipart Allure result files for a project and stores them
 // in the project's results directory.
 func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
-	const maxUploadBytes = 1 << 30 // 1 GB
+	const (
+		maxUploadBytes  = 1 << 30 // 1 GB
+		readIdleTimeout = 60 * time.Second
+	)
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	rc := http.NewResponseController(w)
+
+	err := rc.SetReadDeadline(time.Now().Add(readIdleTimeout))
+	switch {
+	case err == nil:
+		r.Body = &idleTimeoutBody{ReadCloser: r.Body, rc: rc, idle: readIdleTimeout}
+
+	case errors.Is(err, http.ErrNotSupported):
+		slog.Warn("read deadlines not supported, uploading without idle timeout", "err", err)
+
+	default:
+		slog.Error("failed to set read deadline", "err", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
 
 	ct := r.Header.Get("Content-Type")
 	mediaType, _, err := mime.ParseMediaType(ct)
@@ -61,7 +102,7 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 
 	files := make([]string, 0)
 
-	// ponytail: upload is not transactional; files saved before an error remain on disk.
+	// upload is not transactional; files saved before an error remain on disk.
 	// This is acceptable because Allure result filenames are UUID-based and retries overwrite
 	// the same files instead of creating duplicates.
 	for {

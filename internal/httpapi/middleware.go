@@ -46,6 +46,11 @@ func (rec *statusRecorder) WriteHeader(code int) {
 	rec.ResponseWriter.WriteHeader(code)
 }
 
+// Unwrap returns the wrapped ResponseWriter. http.ResponseController walks the
+// Unwrap chain to reach the writer that actually owns the connection, so
+// without this method handlers cannot adjust per-request read/write deadlines.
+func (rec *statusRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
+
 // logger logs one line per request: method, path, status, request ID and
 // duration. Relies on requestID having already populated the context.
 func logger(next http.Handler) http.Handler {
