@@ -51,6 +51,16 @@ func LatestReportDir(baseDir, projectID string) string {
 	return filepath.Join(ReportsDir(baseDir, projectID), "latest")
 }
 
+// TmpRoot returns the path where a project's in-progress report builds are
+// staged: <baseDir>/<projectID>/.tmp. It deliberately sits beside ReportsDir
+// rather than inside it, so half-built reports are invisible to anything
+// listing the project's builds. Staging here also keeps the finished build on
+// the same filesystem as LatestReportDir, which is what lets it be published
+// with a rename.
+func TmpRoot(baseDir, projectID string) string {
+	return filepath.Join(baseDir, projectID, ".tmp")
+}
+
 // ValidateProjectID checks id against projectIDPattern and a 200-character
 // length limit, returning a descriptive error if either check fails.
 func ValidateProjectID(id string) error {
