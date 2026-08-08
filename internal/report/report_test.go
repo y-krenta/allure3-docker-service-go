@@ -22,6 +22,9 @@ const (
 	cliOK = "#!/bin/sh\nprintf 'fresh' > \"$4/index.html\"\n"
 	// cliFail mimics Allure rejecting the results.
 	cliFail = "#!/bin/sh\necho 'boom: broken results' >&2\nexit 3\n"
+	// cliSlow succeeds, but takes long enough that a test can observe the
+	// build while it is still running.
+	cliSlow = "#!/bin/sh\nsleep 0.5\nprintf 'fresh' > \"$4/index.html\"\n"
 )
 
 // fakeCLI writes body to an executable file and returns its path, so a test
@@ -290,5 +293,215 @@ func TestGenerateContextDoneWhileWaitingForLock(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Generate did not return after its context was canceled")
+	}
+}
+
+// waitForState polls until the project's status reaches want, and returns that
+// status. Polling rather than a channel keeps the test honest: it observes the
+// generator only through its public surface, exactly as an HTTP handler would.
+func waitForState(t *testing.T, g *Generator, projectID string, want State) Status {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		st, ok := g.Status(projectID)
+		if ok && st.State == want {
+			return st
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	st, ok := g.Status(projectID)
+	t.Fatalf("status of %q never reached %q (last: %+v, exists=%v)", projectID, want, st, ok)
+	return Status{}
+}
+
+func TestStartReturnsBeforeTheBuildFinishes(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
+
+	began := time.Now()
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	// The whole point of Start: the caller is not made to wait for the CLI.
+	if waited := time.Since(began); waited > 200*time.Millisecond {
+		t.Errorf("Start blocked for %v, want it to return while the build runs", waited)
+	}
+
+	// And the build must be visible as running, not silently in flight.
+	st, ok := g.Status("demo")
+	if !ok || st.State != StateRunning {
+		t.Fatalf("status right after Start = %+v (exists=%v), want %q", st, ok, StateRunning)
+	}
+	if st.StartedAt.IsZero() {
+		t.Error("running status has no StartedAt")
+	}
+
+	waitForState(t, g, "demo", StateSucceeded)
+}
+
+func TestStartRecordsSuccessAndPublishesReport(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+
+	st := waitForState(t, g, "demo", StateSucceeded)
+	if st.Err != nil {
+		t.Errorf("succeeded status carries an error: %v", st.Err)
+	}
+	if st.FinishedAt.Before(st.StartedAt) || st.FinishedAt.IsZero() {
+		t.Errorf("timestamps make no sense: started %v, finished %v", st.StartedAt, st.FinishedAt)
+	}
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want the newly built %q", got, "fresh")
+	}
+}
+
+func TestStartRecordsFailure(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliFail), "demo")
+	writeLatest(t, g, "demo", "stale")
+
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil: a build that will fail still starts fine", err)
+	}
+
+	st := waitForState(t, g, "demo", StateFailed)
+	if st.Err == nil {
+		t.Fatal("failed status carries no error, the caller has no way to learn why")
+	}
+	if !strings.Contains(st.Err.Error(), "boom: broken results") {
+		t.Errorf("status error = %v, want it to carry the CLI stderr", st.Err)
+	}
+	if got := readLatest(t, g, "demo"); got != "stale" {
+		t.Errorf("latest report = %q, want the previous %q left untouched", got, "stale")
+	}
+}
+
+func TestStartRejectsASecondBuildOfTheSameProject(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
+
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("first Start = %v, want nil", err)
+	}
+
+	err := g.Start(t.Context(), "demo")
+	if !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("second Start = %v, want ErrAlreadyRunning", err)
+	}
+
+	// Once the first build is done the project is free again: the claim is a
+	// lock on the build, not a permanent mark on the project.
+	waitForState(t, g, "demo", StateSucceeded)
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start after the previous build finished = %v, want nil", err)
+	}
+	waitForState(t, g, "demo", StateSucceeded)
+}
+
+func TestTryStartClaimsExactlyOnceUnderConcurrency(t *testing.T) {
+	// The claim exists for exactly this: many callers arriving together, all
+	// seeing a free project, and only one being allowed to build it.
+	//
+	// A check-then-set split into two separately locked operations survives a
+	// single round most of the time, because the window between them is a few
+	// nanoseconds wide. Repeating the round is what turns "rarely wrong" into
+	// "reliably caught". Calling tryStart directly matters too: going through
+	// Start puts an os.Stat in front of the claim, which spreads the callers
+	// out and hides the race.
+	const rounds, callers = 200, 40
+
+	for round := range rounds {
+		g := New("unused-dir", "unused-cli") // tryStart never touches disk
+
+		var ready, done sync.WaitGroup
+		ready.Add(callers)
+		done.Add(callers)
+
+		release := make(chan struct{})
+		won := make(chan struct{}, callers)
+
+		for range callers {
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-release // everyone leaves the gate in the same instant
+				if g.tryStart("demo", time.Now()) {
+					won <- struct{}{}
+				}
+			}()
+		}
+
+		ready.Wait()
+		close(release)
+		done.Wait()
+		close(won)
+
+		if n := len(won); n != 1 {
+			t.Fatalf("round %d: %d of %d callers claimed the project, want exactly 1",
+				round, n, callers)
+		}
+	}
+}
+
+func TestStatusStaysReadableWhileABuildRuns(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
+
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+
+	// Holding g.mu for the duration of the build would deadlock the service:
+	// every status request would queue behind the CLI.
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		g.Status("demo")
+	}()
+
+	select {
+	case <-answered:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("Status blocked while a build was running: the build is holding g.mu")
+	}
+
+	waitForState(t, g, "demo", StateSucceeded)
+}
+
+func TestStartIgnoresTheCallersCancellation(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := g.Start(ctx, "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	// Stands in for the client disconnecting mid-build. The work is already
+	// underway and its result lands on disk, so it must not be thrown away.
+	cancel()
+
+	st := waitForState(t, g, "demo", StateSucceeded)
+	if st.Err != nil {
+		t.Errorf("build reported %v after the caller went away, want it to finish", st.Err)
+	}
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want the build to have published %q", got, "fresh")
+	}
+}
+
+func TestStartRejectsUnknownAndMalformedProjects(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Start(t.Context(), "missing"); !errors.Is(err, ErrProjectNotFound) {
+		t.Errorf("Start(missing) = %v, want ErrProjectNotFound", err)
+	}
+	if err := g.Start(t.Context(), "../escape"); err == nil {
+		t.Error("Start accepted a project ID containing a path traversal")
+	}
+
+	// A rejected call must leave no trace, otherwise a typo would mark a
+	// project as running forever.
+	if st, ok := g.Status("missing"); ok {
+		t.Errorf("rejected Start left a status behind: %+v", st)
 	}
 }
