@@ -5,12 +5,18 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
 // TestRoutes drives the real mux, so a mistyped pattern or a wildcard in the
 // wrong place shows up here instead of at service start.
 func TestRoutes(t *testing.T) {
 	s, _ := newTestServer(t, "demo")
+	// The generation routes need a generator that answers. hasStatus makes the
+	// status route reply 200, which a missing route could not fake: the mux
+	// answers an unregistered path with 404 too.
+	s.reports = &stubGenerator{hasStatus: true, status: report.Status{State: report.StateRunning}}
 	h := s.Routes()
 
 	body, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
@@ -30,6 +36,8 @@ func TestRoutes(t *testing.T) {
 			body: strings.NewReader(`{"project_id":"fresh"}`), contentType: "application/json", wantStatus: http.StatusCreated},
 		{name: "delete project", method: http.MethodDelete, target: "/projects/fresh", wantStatus: http.StatusNoContent},
 		{name: "serve report", method: http.MethodGet, target: "/projects/demo/reports/latest/app.js", wantStatus: http.StatusNotFound},
+		{name: "start generation", method: http.MethodPost, target: "/projects/demo/generation", wantStatus: http.StatusAccepted},
+		{name: "generation status", method: http.MethodGet, target: "/projects/demo/generation", wantStatus: http.StatusOK},
 
 		{name: "unknown path", method: http.MethodGet, target: "/nope", wantStatus: http.StatusNotFound},
 		{name: "wrong method on projects", method: http.MethodPut, target: "/projects", wantStatus: http.StatusMethodNotAllowed},
