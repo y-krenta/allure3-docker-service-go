@@ -40,7 +40,9 @@ func fakeCLI(t *testing.T, body string) string {
 }
 
 // newTestGenerator returns a Generator rooted at a fresh temp dir, running the
-// given CLI, with the given projects already created.
+// given CLI, with the given projects already created and holding one result
+// file each — a project with an empty results dir is refused before any build
+// starts, so tests about building need something to build from.
 func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Generator {
 	t.Helper()
 
@@ -49,8 +51,19 @@ func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Gen
 		if err := projects.CreateDir(dir, id); err != nil {
 			t.Fatalf("CreateDir(%q) = %v", id, err)
 		}
+		writeResult(t, dir, id)
 	}
 	return New(dir, allureBin)
+}
+
+// writeResult drops one Allure result file into the project's results dir.
+func writeResult(t *testing.T, baseDir, projectID string) {
+	t.Helper()
+
+	path := filepath.Join(projects.ResultsDir(baseDir, projectID), "9f0a1c-result.json")
+	if err := os.WriteFile(path, []byte(`{"name":"a test"}`), 0o644); err != nil {
+		t.Fatalf("writing result file: %v", err)
+	}
 }
 
 // writeLatest replaces the project's latest report with one containing body,
@@ -127,6 +140,51 @@ func TestGenerateUnknownProject(t *testing.T) {
 	if !errors.Is(err, ErrProjectNotFound) {
 		t.Fatalf("Generate(missing) = %v, want ErrProjectNotFound", err)
 	}
+}
+
+// An empty results directory would build an empty report and publish it over
+// the last good one, so both entry points refuse it before touching anything.
+func TestEmptyResultsDirIsRefused(t *testing.T) {
+	newEmptyProject := func(t *testing.T) *Generator {
+		t.Helper()
+
+		dir := t.TempDir()
+		if err := projects.CreateDir(dir, "demo"); err != nil {
+			t.Fatalf("CreateDir: %v", err)
+		}
+		return New(dir, fakeCLI(t, cliOK))
+	}
+
+	t.Run("Generate", func(t *testing.T) {
+		g := newEmptyProject(t)
+
+		if err := g.Generate(t.Context(), "demo"); !errors.Is(err, ErrNoResults) {
+			t.Fatalf("Generate = %v, want ErrNoResults", err)
+		}
+	})
+
+	t.Run("Start", func(t *testing.T) {
+		g := newEmptyProject(t)
+
+		if err := g.Start(t.Context(), "demo"); !errors.Is(err, ErrNoResults) {
+			t.Fatalf("Start = %v, want ErrNoResults", err)
+		}
+		if st, ok := g.Status("demo"); ok {
+			t.Fatalf("Status = %+v, want no status recorded for a rejected build", st)
+		}
+	})
+
+	t.Run("the previous report survives", func(t *testing.T) {
+		g := newEmptyProject(t)
+		writeLatest(t, g, "demo", "previous")
+
+		if err := g.Generate(t.Context(), "demo"); !errors.Is(err, ErrNoResults) {
+			t.Fatalf("Generate = %v, want ErrNoResults", err)
+		}
+		if got := readLatest(t, g, "demo"); got != "previous" {
+			t.Fatalf("latest report = %q, want the previous one left untouched", got)
+		}
+	})
 }
 
 func TestGenerateSerializesSameProject(t *testing.T) {

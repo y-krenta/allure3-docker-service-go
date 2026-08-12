@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -82,6 +83,12 @@ var (
 	// already in flight. It is not quite a failure: the report the caller
 	// asked for is being produced, just not by this call.
 	ErrAlreadyRunning = errors.New("report generation is already running")
+
+	// ErrNoResults is returned when the project's results directory is
+	// empty. Allure builds a report from nothing without complaining, and
+	// publishing it would replace the last good report with an empty one,
+	// so a build with nothing to build from is refused instead.
+	ErrNoResults = errors.New("project has no results to generate a report from")
 )
 
 // New builds a Generator that reads and writes project data under projectsDir
@@ -165,24 +172,36 @@ func (g *Generator) tryStart(projectID string, startedAt time.Time) bool {
 }
 
 // checkProject reports whether projectID names a project this generator can
-// build: the ID must be well formed and the project's results directory must
-// exist. It is the shared precondition of Generate and Start, which is why its
-// errors name no particular operation.
+// build: the ID must be well formed, and the project's results directory must
+// exist and hold at least one entry. It is the shared precondition of Generate
+// and Start, which is why its errors name no particular operation.
 //
-// A missing results directory is reported as ErrProjectNotFound (wrapped), so
-// callers can tell "no such project" from a genuine I/O failure with errors.Is.
+// A missing results directory is reported as ErrProjectNotFound (wrapped) and
+// an empty one as ErrNoResults (wrapped), so callers can tell either from a
+// genuine I/O failure with errors.Is. The directory is opened once and probed
+// for a single entry rather than listed: whether it holds one result or ten
+// thousand, the question is only whether it holds any.
 func (g *Generator) checkProject(projectID string) error {
 	err := projects.ValidateProjectID(projectID)
 	if err != nil {
 		return err
 	}
 
-	_, err = os.Stat(projects.ResultsDir(g.projectsDir, projectID))
+	f, err := os.Open(projects.ResultsDir(g.projectsDir, projectID))
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("%w: %s", ErrProjectNotFound, projectID)
 	}
 	if err != nil {
 		return fmt.Errorf("checking for results directory: %w", err)
+	}
+	defer f.Close()
+
+	_, err = f.ReadDir(1)
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: %s", ErrNoResults, projectID)
+	}
+	if err != nil {
+		return fmt.Errorf("reading results directory: %w", err)
 	}
 
 	return nil
@@ -201,7 +220,8 @@ func (g *Generator) checkProject(projectID string) error {
 // at the start of each build, under the project's lock.
 //
 // It returns ErrProjectNotFound (wrapped) if the project has no results
-// directory, an error wrapping ctx.Err() if the context is already done by
+// directory, ErrNoResults (wrapped) if that directory is empty, an error
+// wrapping ctx.Err() if the context is already done by
 // the time the project lock is acquired, and a descriptive error for any
 // other failure. Callers should match with errors.Is rather than on the
 // message.
@@ -317,7 +337,8 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir string) er
 // StateSucceeded or StateFailed.
 //
 // It returns a validation error for a malformed project ID, ErrProjectNotFound
-// (wrapped) if the project has no results directory, and ErrAlreadyRunning
+// (wrapped) if the project has no results directory, ErrNoResults (wrapped) if
+// that directory is empty, and ErrAlreadyRunning
 // (wrapped) if a build for that project is already in flight. Rejecting the
 // second caller rather than queueing it keeps a burst of requests from piling
 // up builds that would each rebuild what the previous one just built.

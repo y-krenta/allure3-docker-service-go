@@ -1,13 +1,29 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
+
+// generationStatusResponse is the JSON body returned by generationStatus. It
+// restates report.Status instead of reusing it: that type carries an error,
+// which encoding/json renders as an empty object, and the wire format should
+// not shift every time the internal snapshot does.
+type generationStatusResponse struct {
+	State     string    `json:"state"`
+	StartedAt time.Time `json:"started_at"`
+	// omitzero rather than omitempty: a struct is never "empty" to
+	// encoding/json, so omitempty would publish the zero time as
+	// 0001-01-01T00:00:00Z while the build is still running.
+	FinishedAt time.Time `json:"finished_at,omitzero"`
+	Error      string    `json:"error,omitempty"`
+}
 
 // startGeneration handles POST /projects/{id}/generation. It asks the report
 // generator to begin a build and answers as soon as the build has been
@@ -39,6 +55,10 @@ func (s *Server) startGeneration(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "report generation is already running", http.StatusConflict)
 		return
 
+	case errors.Is(err, report.ErrNoResults):
+		http.Error(w, "project has no results to generate a report from", http.StatusConflict)
+		return
+
 	case err != nil:
 		slog.Error("failed to start generation", "err", err, "project_id", id)
 		http.Error(w, "failed to start generation", http.StatusInternalServerError)
@@ -46,4 +66,44 @@ func (s *Server) startGeneration(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// generationStatus handles GET /projects/{id}/generation. It reports where the
+// last build started for the project stands. That record lives in memory, so a
+// restart forgets it: a project whose report is sitting on disk can still
+// answer 404 here.
+//
+// Responds 200 with generationStatusResponse, 400 if id fails
+// projects.ValidateProjectID, and 404 if no build was ever started for the
+// project. A build that failed is still a 200 — reading the status succeeded,
+// and the failure belongs in the body as state "failed" plus the CLI's message
+// in error.
+func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	err := projects.ValidateProjectID(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	st, ok := s.reports.Status(id)
+	if !ok {
+		http.Error(w, "no generation has been started for this project", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	resp := generationStatusResponse{
+		State:      string(st.State),
+		StartedAt:  st.StartedAt,
+		FinishedAt: st.FinishedAt,
+	}
+
+	if st.Err != nil {
+		resp.Error = st.Err.Error()
+	}
+	err = json.NewEncoder(w).Encode(resp)
+	if err != nil {
+		slog.Error("failed to encode generation status", "err", err, "project_id", id)
+	}
 }
