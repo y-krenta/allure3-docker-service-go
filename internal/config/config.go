@@ -1,6 +1,7 @@
 package config
 
 import (
+	"cmp"
 	"log"
 	"os"
 	"strconv"
@@ -19,6 +20,7 @@ type Config struct {
 	TLS                  bool          // Enable HTTPS
 	DevMode              bool          // Enables Flask debug reloader
 	ProjectsDir          string        // Default path projects
+	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -27,10 +29,7 @@ type Config struct {
 // with a logged warning.
 func Load() Config {
 	var config Config
-	config.Port = os.Getenv("PORT")
-	if config.Port == "" {
-		config.Port = "5050"
-	}
+	config.Port = cmp.Or(os.Getenv("PORT"), "5050")
 	config.SecurityEnable = getEnvAsBool("SECURITY_ENABLED", false)
 	config.KeepHistory = getEnvAsBool("KEEP_HISTORY", false)
 	config.KeepHistoryLatest = getEnvAsInt("KEEP_HISTORY_LATEST", 25)
@@ -38,10 +37,8 @@ func Load() Config {
 	config.OptimizeStorage = getEnvAsBool("OPTIMIZE_STORAGE", false)
 	config.TLS = getEnvAsBool("TLS", false)
 	config.DevMode = getEnvAsBool("DEV_MODE", false)
-	config.ProjectsDir = os.Getenv("STATIC_CONTENT_PROJECTS")
-	if config.ProjectsDir == "" {
-		config.ProjectsDir = "/app/projects"
-	}
+	config.ProjectsDir = cmp.Or(os.Getenv("STATIC_CONTENT_PROJECTS"), "/app/projects")
+	config.AllureBin = cmp.Or(os.Getenv("ALLURE_BIN"), "allure")
 
 	return config
 

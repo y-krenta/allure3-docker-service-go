@@ -12,7 +12,7 @@ func TestLoadDefaults(t *testing.T) {
 	for _, key := range []string{
 		"PORT", "SECURITY_ENABLED", "KEEP_HISTORY", "KEEP_HISTORY_LATEST",
 		"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
-		"STATIC_CONTENT_PROJECTS",
+		"STATIC_CONTENT_PROJECTS", "ALLURE_BIN",
 	} {
 		t.Setenv(key, "")
 	}
@@ -29,6 +29,7 @@ func TestLoadDefaults(t *testing.T) {
 		TLS:                  false,
 		DevMode:              false,
 		ProjectsDir:          "/app/projects",
+		AllureBin:            "allure",
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -45,6 +46,7 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("TLS", "t")
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("STATIC_CONTENT_PROJECTS", "/data/projects")
+	t.Setenv("ALLURE_BIN", "/opt/allure/bin/allure")
 
 	got := Load()
 
@@ -58,6 +60,7 @@ func TestLoadFromEnv(t *testing.T) {
 		TLS:                  true,
 		DevMode:              true,
 		ProjectsDir:          "/data/projects",
+		AllureBin:            "/opt/allure/bin/allure",
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)

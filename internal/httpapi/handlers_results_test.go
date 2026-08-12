@@ -62,7 +62,9 @@ func newTestServer(t *testing.T, projectIDs ...string) (*Server, string) {
 		}
 	}
 
-	return NewServer(dir), dir
+	// nil generator: these tests never reach a report endpoint, and a nil
+	// interface panics loudly if one ever does.
+	return NewServer(dir, nil), dir
 }
 
 // do sends one request to sendResults and returns the recorded response.

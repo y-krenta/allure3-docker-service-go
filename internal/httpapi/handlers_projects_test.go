@@ -153,7 +153,7 @@ func TestListProjects(t *testing.T) {
 	})
 
 	t.Run("unreadable projects dir is a server error", func(t *testing.T) {
-		s := NewServer(filepath.Join(t.TempDir(), "does-not-exist"))
+		s := NewServer(filepath.Join(t.TempDir(), "does-not-exist"), nil)
 
 		w := callWithPath(s.listProjects, http.MethodGet, "/projects", nil, nil)
 
@@ -281,7 +281,7 @@ func TestGetProject(t *testing.T) {
 		if err := os.Mkdir(filepath.Join(dir, "demo"), 0755); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
-		s := NewServer(dir)
+		s := NewServer(dir, nil)
 
 		w := callWithPath(s.getProject, http.MethodGet, "/projects/demo", nil, map[string]string{"id": "demo"})
 

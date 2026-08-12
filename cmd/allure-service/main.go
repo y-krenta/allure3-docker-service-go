@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -13,14 +14,21 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/config"
 	"github.com/y-krenta/allure3-docker-service-go/internal/httpapi"
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
+	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
 func main() {
 	cfg := config.Load()
+	resolved, err := exec.LookPath(cfg.AllureBin)
+	if err != nil {
+		log.Fatalf("allure CLI not found (ALLURE_BIN=%q): %v", cfg.AllureBin, err)
+	}
+
+	log.Printf("allure %s", resolved)
 	pathDefaultLatestReportDir := projects.LatestReportDir(cfg.ProjectsDir, projects.DefaultProjectID)
 	pathDefaultResultDir := projects.ResultsDir(cfg.ProjectsDir, projects.DefaultProjectID)
 
-	err := os.MkdirAll(cfg.ProjectsDir, 0755)
+	err = os.MkdirAll(cfg.ProjectsDir, 0755)
 	if err != nil {
 		log.Fatalf("cannot create projects dir %q: %v", cfg.ProjectsDir, err)
 	}
@@ -34,7 +42,9 @@ func main() {
 		log.Fatalf("cannot create default result dir %q: %v", pathDefaultResultDir, err)
 	}
 
-	s := httpapi.NewServer(cfg.ProjectsDir)
+	reports := report.New(cfg.ProjectsDir, cfg.AllureBin)
+
+	s := httpapi.NewServer(cfg.ProjectsDir, reports)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           s.Routes(),
