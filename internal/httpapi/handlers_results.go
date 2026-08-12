@@ -74,9 +74,8 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := r.PathValue("id")
-	if err := projects.ValidateProjectID(id); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	id, ok := requireProjectID(w, r)
+	if !ok {
 		return
 	}
 

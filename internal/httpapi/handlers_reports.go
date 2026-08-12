@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
@@ -38,14 +37,12 @@ type generationStatusResponse struct {
 // so reporting it as accepted would promise a report that never includes them.
 // Any other failure is logged and reported as 500 without detail.
 func (s *Server) startGeneration(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	err := projects.ValidateProjectID(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	id, ok := requireProjectID(w, r)
+	if !ok {
 		return
 	}
 
-	err = s.reports.Start(r.Context(), id)
+	err := s.reports.Start(r.Context(), id)
 	switch {
 	case errors.Is(err, report.ErrProjectNotFound):
 		http.Error(w, "project not found", http.StatusNotFound)
@@ -79,10 +76,8 @@ func (s *Server) startGeneration(w http.ResponseWriter, r *http.Request) {
 // and the failure belongs in the body as state "failed" plus the CLI's message
 // in error.
 func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	err := projects.ValidateProjectID(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	id, ok := requireProjectID(w, r)
+	if !ok {
 		return
 	}
 
@@ -102,7 +97,7 @@ func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Err != nil {
 		resp.Error = st.Err.Error()
 	}
-	err = json.NewEncoder(w).Encode(resp)
+	err := json.NewEncoder(w).Encode(resp)
 	if err != nil {
 		slog.Error("failed to encode generation status", "err", err, "project_id", id)
 	}

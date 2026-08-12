@@ -99,13 +99,11 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 // projects.ValidateProjectID, 403 for the reserved default project
 // (projects.DefaultProjectID).
 func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-
-	errValidation := projects.ValidateProjectID(id)
-	if errValidation != nil {
-		http.Error(w, errValidation.Error(), http.StatusBadRequest)
+	id, ok := requireProjectID(w, r)
+	if !ok {
 		return
 	}
+
 	if id == projects.DefaultProjectID {
 		slog.Error("It is forbidden to delete the default directory")
 		http.Error(w, "The default directory cannot be deleted.", http.StatusForbidden)
@@ -135,10 +133,8 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 
 	var items []buildEntry
 
-	id := r.PathValue("id")
-	errValidation := projects.ValidateProjectID(id)
-	if errValidation != nil {
-		http.Error(w, errValidation.Error(), http.StatusBadRequest)
+	id, ok := requireProjectID(w, r)
+	if !ok {
 		return
 	}
 	projectPath := filepath.Join(s.projectsDir, id)
@@ -202,22 +198,18 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, ok := requireProjectID(w, r)
+	if !ok {
+		return
+	}
 	reportPath := r.PathValue("path")
 	reportPath = path.Clean(reportPath)
-
 	if reportPath == "." {
 		http.Error(w, "path empty", http.StatusBadRequest)
 		return
 	}
-	err := projects.ValidateProjectID(id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 
 	rootDir := os.DirFS(projects.ReportsDir(s.projectsDir, id))
-
 	http.ServeFileFS(w, r, rootDir, reportPath)
 
 }
