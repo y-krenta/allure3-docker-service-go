@@ -92,6 +92,9 @@ func TestSendResults(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
 		}
+		if got := w.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
 
 		var got sendResultsResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {

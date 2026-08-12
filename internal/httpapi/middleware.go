@@ -25,7 +25,7 @@ func recoverer(next http.Handler) http.Handler {
 		defer func() {
 			if rec := recover(); rec != nil {
 				slog.Error("panic in request handler", "error", rec)
-				http.Error(w, "internal server error", http.StatusInternalServerError)
+				http.Error(w, msgInternalError, http.StatusInternalServerError)
 			}
 		}()
 
@@ -76,7 +76,7 @@ func requestID(next http.Handler) http.Handler {
 		id, err := uuid.NewV7()
 		if err != nil {
 			slog.Error("failed to generate new UUID", "error", err)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, msgInternalError, http.StatusInternalServerError)
 			return
 		}
 		ctx := context.WithValue(r.Context(), requestIDKey, id.String())

@@ -55,7 +55,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project already exists", http.StatusConflict)
 		return
 	case err != nil:
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	default:
 		w.WriteHeader(http.StatusCreated)
@@ -66,12 +66,11 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 // filters project IDs by a case-insensitive substring match. Responds 200
 // with listProjectsResponse.
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	search := strings.ToLower(r.URL.Query().Get("search"))
 	entries, err := os.ReadDir(s.projectsDir)
 	if err != nil {
 		slog.Error("error read dir", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
 
@@ -86,12 +85,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := listProjectsResponse{Projects: ids}
-	encoder := json.NewEncoder(w)
-	errEncoding := encoder.Encode(resp)
-	if errEncoding != nil {
-		slog.Error("failed to encode response: ", "err", errEncoding)
-		return
-	}
+	writeJSON(w, r, resp)
 }
 
 // deleteProject handles DELETE /projects/{id}. Removes the project
@@ -112,7 +106,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 	err := os.RemoveAll(filepath.Join(s.projectsDir, id))
 	if err != nil {
 		slog.Error("failed to delete project", "err", err, "project_id", id)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -144,7 +138,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		return
 	} else if errStat != nil {
 		slog.Error("failed to stat project path", "err", errStat, "path", projectPath)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
 	builds := make([]string, 0)
@@ -153,7 +147,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	entries, err := os.ReadDir(buildsPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		slog.Error("failed to read dir", "err", err, "path", buildsPath)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
 	for _, entry := range entries {
@@ -167,7 +161,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			slog.Error("failed to stat index file", "err", errStatIndex, "path", pathToIndex)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, msgInternalError, http.StatusInternalServerError)
 			return
 		}
 		items = append(items, buildEntry{Name: entry.Name(), When: info.ModTime()})
@@ -186,14 +180,8 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	resp := projectBuildsResponse{Builds: builds}
-
-	err = json.NewEncoder(w).Encode(resp)
-	if err != nil {
-		slog.Error("failed to encode response", "err", err)
-		return
-	}
+	writeJSON(w, r, resp)
 
 }
 

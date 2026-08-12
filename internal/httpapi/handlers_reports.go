@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -87,7 +86,6 @@ func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
 	resp := generationStatusResponse{
 		State:      string(st.State),
 		StartedAt:  st.StartedAt,
@@ -97,8 +95,5 @@ func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
 	if st.Err != nil {
 		resp.Error = st.Err.Error()
 	}
-	err := json.NewEncoder(w).Encode(resp)
-	if err != nil {
-		slog.Error("failed to encode generation status", "err", err, "project_id", id)
-	}
+	writeJSON(w, r, resp)
 }

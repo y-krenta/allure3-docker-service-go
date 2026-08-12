@@ -101,6 +101,11 @@ func TestListProjects(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
 		}
+		// A JSON body with no Content-Type leaves the client sniffing, and
+		// nothing else in this test would notice the header going missing.
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
+		}
 		var got listProjectsResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("decode %q: %v", w.Body, err)
@@ -217,6 +222,9 @@ func TestGetProject(t *testing.T) {
 
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
 		var got projectBuildsResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {

@@ -5,7 +5,7 @@ import (
 )
 
 // Base paths for the route groups registered in Routes.
-var (
+const (
 	projectsEndpoint = "/projects"
 	healthEndpoint   = "/health"
 )

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,7 +62,7 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		slog.Error("failed to set read deadline", "err", err)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
 
@@ -88,7 +87,7 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		slog.Error("failed to open project results dir", "err", err, "path", resultsPath)
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
 	defer root.Close()
@@ -134,7 +133,7 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 			}
 
 			slog.Error("failed to save uploaded file", "err", err, "file", name)
-			http.Error(w, "internal server error", http.StatusInternalServerError)
+			http.Error(w, msgInternalError, http.StatusInternalServerError)
 			return
 		}
 
@@ -158,11 +157,7 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		Count: len(files),
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		slog.Error("failed to encode send results response", "err", err)
-	}
+	writeJSON(w, r, resp)
 }
 
 // handleMaxBytesError writes 413 Payload Too Large if err contains
