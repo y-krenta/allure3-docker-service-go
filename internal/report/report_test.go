@@ -358,7 +358,7 @@ func TestGenerateInvokesAwesomeWithHistoryPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("argv = %q, want it to carry --history-path", argv)
 	}
-	if real := projects.HistoryFile(g.projectsDir, "demo"); got == real {
+	if published := projects.HistoryFile(g.projectsDir, "demo"); got == published {
 		t.Errorf("--history-path = %q, want a staged copy rather than the project's own history", got)
 	}
 	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
