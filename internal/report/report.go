@@ -366,6 +366,16 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 // this run. See writeAllureConfig for how the file is built and why its name
 // matters.
 //
+// The CLI runs from a neutral working directory rather than inheriting this
+// process's. It stamps every report with a "ci" block that it fills by shelling
+// out to git - show-toplevel, the current branch, the origin remote - passing
+// git no directory of its own, so git inherits ours and searches upwards for a
+// repository. Started from inside a checkout, the service would brand every
+// customer's report with its own repository name, branch and remote. The
+// project's temp dir is no defence: a projects root that lives inside a
+// checkout is still inside it, four levels down. Every path handed to the CLI
+// is absolute, so the directory it runs in changes nothing else.
+//
 // The CLI's stderr is captured and carried into the returned error: without it
 // a failed build reports nothing but an exit status. A missing executable is
 // reported as an error wrapping exec.ErrNotFound, which is a deployment
@@ -380,6 +390,7 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPa
 		"--history-path", historyPath,
 		"--config", configPath,
 	)
+	cmd.Dir = os.TempDir()
 
 	var stderr bytes.Buffer
 

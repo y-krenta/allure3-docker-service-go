@@ -76,6 +76,14 @@ func cliDumpConfig(dumpPath string) string {
 		"exit 0\n"
 }
 
+// cliRecordCwd returns a CLI body that writes its own working directory into
+// dumpPath before producing a report the way cliOK does. -P resolves symlinks,
+// which matters on macOS where the temp dir lives under /var, itself a link to
+// /private/var.
+func cliRecordCwd(dumpPath string) string {
+	return "#!/bin/sh\npwd -P > \"" + dumpPath + "\"\nprintf 'fresh' > \"$4/index.html\"\n"
+}
+
 // fakeCLI writes body to an executable file and returns its path, so a test
 // can drive Generate without depending on a real Allure installation.
 func fakeCLI(t *testing.T, body string) string {
@@ -411,6 +419,39 @@ func TestGenerateInvokesAwesomeWithHistoryPath(t *testing.T) {
 	}
 	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
 		t.Errorf("--history-path = %q, want it staged under %q", got, tmp)
+	}
+}
+
+// TestRunAllureRunsTheCLIFromANeutralDirectory pins the working directory the
+// CLI is started in, which is not the cosmetic detail it looks like.
+//
+// Allure stamps every report with a "ci" block it fills by shelling out to git
+// - rev-parse --show-toplevel, rev-parse --abbrev-ref HEAD, remote get-url
+// origin - with no directory of its own, so git inherits ours and searches
+// upwards for a repository. Started from anywhere inside one, the service
+// brands other people's reports with its own repository name, branch and
+// remote. Even the project's temp dir is not safe: a projects root that lives
+// inside a checkout is still inside it four levels down.
+func TestRunAllureRunsTheCLIFromANeutralDirectory(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "cwd")
+	g := newTestGenerator(t, fakeCLI(t, cliRecordCwd(dump)), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("reading recorded cwd: %v", err)
+	}
+	got := strings.TrimSpace(string(raw))
+
+	want, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatalf("resolving the temp dir: %v", err)
+	}
+	if got != want {
+		t.Errorf("CLI ran in %q, want the neutral %q - anything else lets git metadata leak into the report", got, want)
 	}
 }
 
