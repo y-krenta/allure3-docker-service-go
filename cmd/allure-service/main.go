@@ -15,6 +15,7 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/httpapi"
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
+	"github.com/y-krenta/allure3-docker-service-go/internal/watcher"
 )
 
 func main() {
@@ -44,6 +45,13 @@ func main() {
 
 	reports := report.New(cfg.ProjectsDir, cfg.AllureBin)
 
+	watchCtx, stopWatch := context.WithCancel(context.Background())
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		watcher.Run(watchCtx, cfg.ProjectsDir, cfg.CheckResultsInterval, reports.Start)
+	}()
+
 	s := httpapi.NewServer(cfg.ProjectsDir, reports)
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -69,6 +77,9 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	errShutdown := srv.Shutdown(ctx)
+	stopWatch()
+	<-watchDone
+
 	if errShutdown != nil {
 		log.Println(errShutdown)
 	}
