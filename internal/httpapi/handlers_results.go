@@ -90,7 +90,7 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msgInternalError, http.StatusInternalServerError)
 		return
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	mr, err := r.MultipartReader()
 	if err != nil {

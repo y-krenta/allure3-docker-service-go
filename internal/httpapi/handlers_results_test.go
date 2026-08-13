@@ -269,7 +269,7 @@ func TestSavePart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenRoot: %v", err)
 		}
-		defer root.Close()
+		defer func() { _ = root.Close() }()
 
 		n, err := savePart(root, "x.json", strings.NewReader("hello"))
 		if err != nil {
@@ -294,7 +294,7 @@ func TestSavePart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenRoot: %v", err)
 		}
-		defer root.Close()
+		defer func() { _ = root.Close() }()
 
 		src := io.MultiReader(strings.NewReader("partial"), errReader{})
 
@@ -318,7 +318,7 @@ func TestSavePart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("OpenRoot: %v", err)
 		}
-		defer root.Close()
+		defer func() { _ = root.Close() }()
 
 		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err == nil {
 			t.Fatal("savePart followed the symlink, want an error")

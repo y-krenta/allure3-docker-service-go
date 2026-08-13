@@ -194,7 +194,7 @@ func (g *Generator) checkProject(projectID string) error {
 	if err != nil {
 		return fmt.Errorf("checking for results directory: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	_, err = f.ReadDir(1)
 	if errors.Is(err, io.EOF) {
@@ -256,7 +256,7 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	if err != nil {
 		return fmt.Errorf("creating output directory in tmpdir: %w", err)
 	}
-	defer os.RemoveAll(outDir)
+	defer func() { _ = os.RemoveAll(outDir) }()
 
 	err = g.runAllure(ctx, projects.ResultsDir(g.projectsDir, projectID), outDir)
 	if err != nil {
