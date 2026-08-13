@@ -22,8 +22,8 @@ func TestLoadDefaults(t *testing.T) {
 	want := Config{
 		Port:                 "5050",
 		SecurityEnable:       false,
-		KeepHistory:          false,
-		KeepHistoryLatest:    25,
+		KeepHistory:          true,
+		KeepHistoryLatest:    60,
 		CheckResultsInterval: 0,
 		OptimizeStorage:      false,
 		TLS:                  false,
@@ -77,8 +77,8 @@ func TestLoadFallsBackOnGarbage(t *testing.T) {
 	if got.SecurityEnable {
 		t.Errorf("SecurityEnable = true, want the false default")
 	}
-	if got.KeepHistoryLatest != 25 {
-		t.Errorf("KeepHistoryLatest = %d, want the 25 default", got.KeepHistoryLatest)
+	if got.KeepHistoryLatest != 60 {
+		t.Errorf("KeepHistoryLatest = %d, want the 60 default", got.KeepHistoryLatest)
 	}
 	if got.CheckResultsInterval != 0 {
 		t.Errorf("CheckResultsInterval = %v, want the 0 default", got.CheckResultsInterval)

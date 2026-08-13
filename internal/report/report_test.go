@@ -2,6 +2,7 @@ package report
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
@@ -17,11 +18,12 @@ import (
 // Shell bodies for the stand-in Allure CLI used by the tests. They are called
 // the way runAllure calls the real thing:
 //
-//	awesome <resultsDir> --output <outDir> --history-path <historyPath>
+//	awesome <resultsDir> --output <outDir> --history-path <historyPath> --config <configPath>
 //
-// so $4 is the output directory. Keep that position in mind when changing the
-// command line: move --output and these bodies write the report somewhere else
-// entirely, and every test that reads it fails at once.
+// so $4 is the output directory and $6 the history file. Keep those positions
+// in mind when changing the command line: move --output and these bodies write
+// the report somewhere else entirely, and every test that reads it fails at
+// once.
 const (
 	// cliOK mimics a successful build by writing a recognizable report.
 	cliOK = "#!/bin/sh\nprintf 'fresh' > \"$4/index.html\"\n"
@@ -36,6 +38,17 @@ const (
 	// cliSlow succeeds, but takes long enough that a test can observe the
 	// build while it is still running.
 	cliSlow = "#!/bin/sh\nsleep 0.5\nprintf 'fresh' > \"$4/index.html\"\n"
+	// cliFloodStderr fails after burying its diagnostic under roughly 9 KB of
+	// noise, the way the real CLI does when it chokes on a history file: it
+	// echoes the offending line first and only then says what was wrong with
+	// it. The two markers sit at either end so a test can tell which end
+	// survived truncation.
+	cliFloodStderr = "#!/bin/sh\n" +
+		"printf 'HEAD-ONLY-MARKER' >&2\n" +
+		"i=0\n" +
+		"while [ $i -lt 200 ]; do printf '0123456789012345678901234567890123456789' >&2; i=$((i+1)); done\n" +
+		"printf 'SyntaxError: TAIL-MARKER' >&2\n" +
+		"exit 3\n"
 )
 
 // cliRecordArgv returns a CLI body that dumps its argv, one element per line,
@@ -44,6 +57,23 @@ const (
 // independent of the order runAllure happens to use.
 func cliRecordArgv(dumpPath string) string {
 	return "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + dumpPath + "\"\nprintf 'fresh' > \"$4/index.html\"\n"
+}
+
+// cliDumpConfig returns a CLI body that copies the file it was handed after
+// --config into dumpPath, then produces a report the way cliOK does.
+//
+// The copy happens while the CLI is running, which is the whole point: the
+// config has to exist and hold the right value at that moment, not merely be
+// left lying around in the temp dir once the build is over. Argv is scanned
+// rather than indexed so the assertion survives a reordering of the flags.
+func cliDumpConfig(dumpPath string) string {
+	return "#!/bin/sh\n" +
+		"printf 'fresh' > \"$4/index.html\"\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"--config\" ]; then cat \"$2\" > \"" + dumpPath + "\"; fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"exit 0\n"
 }
 
 // fakeCLI writes body to an executable file and returns its path, so a test
@@ -57,6 +87,13 @@ func fakeCLI(t *testing.T, body string) string {
 	}
 	return path
 }
+
+// testHistoryLimit is the history limit every generator built by
+// newTestGenerator carries. It is deliberately not 25 or any other plausible
+// production default: a test asserting on the generated Allure config has to
+// prove the number travelled from the caller rather than from a constant
+// someone hardcoded on the way.
+const testHistoryLimit = 7
 
 // newTestGenerator returns a Generator rooted at a fresh temp dir, running the
 // given CLI, with the given projects already created and holding one result
@@ -72,7 +109,7 @@ func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Gen
 		}
 		writeResult(t, dir, id)
 	}
-	return New(dir, allureBin)
+	return New(dir, allureBin, testHistoryLimit)
 }
 
 // writeResult drops one Allure result file into the project's results dir.
@@ -171,7 +208,7 @@ func TestEmptyResultsDirIsRefused(t *testing.T) {
 		if err := projects.CreateDir(dir, "demo"); err != nil {
 			t.Fatalf("CreateDir: %v", err)
 		}
-		return New(dir, fakeCLI(t, cliOK))
+		return New(dir, fakeCLI(t, cliOK), testHistoryLimit)
 	}
 
 	t.Run("Generate", func(t *testing.T) {
@@ -299,6 +336,14 @@ func TestGenerateFailedBuildKeepsPreviousReport(t *testing.T) {
 	}
 }
 
+// TestGenerateRemovesTempBuildDirs pins down that a build sweeps the staging
+// area it inherits: a directory left behind by a build that was killed before
+// it could clean up must not survive the next one.
+//
+// The assertion is about build directories rather than about the temp root
+// being empty. The root legitimately keeps scratch files a build needs for its
+// whole run - the staged history copy, the generated Allure config - and those
+// are cleared by the next build's RemoveAll rather than at the end of this one.
 func TestGenerateRemovesTempBuildDirs(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
@@ -316,8 +361,10 @@ func TestGenerateRemovesTempBuildDirs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading temp root: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("temp root still holds %d entries after a build, want it empty", len(entries))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "build-") {
+			t.Errorf("temp root still holds %q after a build, want every build dir gone", e.Name())
+		}
 	}
 }
 
@@ -325,7 +372,8 @@ func TestRunAllureReportsMissingBinary(t *testing.T) {
 	g := newTestGenerator(t, "definitely-not-an-installed-binary", "demo")
 
 	err := g.runAllure(t.Context(), t.TempDir(), t.TempDir(),
-		filepath.Join(t.TempDir(), "history.jsonl"))
+		filepath.Join(t.TempDir(), "history.jsonl"),
+		filepath.Join(t.TempDir(), "allurerc.json"))
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("runAllure = %v, want an error wrapping exec.ErrNotFound", err)
 	}
@@ -363,6 +411,127 @@ func TestGenerateInvokesAwesomeWithHistoryPath(t *testing.T) {
 	}
 	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
 		t.Errorf("--history-path = %q, want it staged under %q", got, tmp)
+	}
+}
+
+// TestRunAllureKeepsTheTailOfAFloodedStderr pins down which end of a huge
+// stderr survives. It matters because of how the CLI actually fails: fed a
+// malformed history file it echoes the whole offending line - tens of
+// kilobytes of JSON - and prints the SyntaxError only at the very end. Keeping
+// the head would carry 4 KB of that JSON into the error and drop every word
+// explaining what went wrong.
+func TestRunAllureKeepsTheTailOfAFloodedStderr(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliFloodStderr), "demo")
+
+	err := g.Generate(t.Context(), "demo")
+	if err == nil {
+		t.Fatal("Generate = nil, want the CLI failure")
+	}
+	got := err.Error()
+
+	if !strings.Contains(got, "TAIL-MARKER") {
+		t.Errorf("error = %q, want it to carry the end of stderr, where the CLI puts its diagnostic", got)
+	}
+	if strings.Contains(got, "HEAD-ONLY-MARKER") {
+		t.Error("error carries the start of stderr, so the flood was kept and the diagnostic dropped")
+	}
+	// The whole error, not just the captured stderr: the wrapping around it is
+	// a fixed handful of bytes, so a generous margin still fails loudly if the
+	// truncation stops happening at all.
+	if len(got) > maxStderrBytes+512 {
+		t.Errorf("error is %d bytes, want stderr truncated to about %d", len(got), maxStderrBytes)
+	}
+}
+
+// TestGenerateInvokesAwesomeWithConfigPath covers the flag that carries the
+// retention setting. The awesome subcommand has no --history-limit of its own -
+// only generate does - so the limit reaches the CLI through a config file, and
+// three things about that file's path are load-bearing.
+//
+// Its extension must be .json: the CLI dispatches on the extension when it
+// loads a config, and anything it does not recognise is skipped in silence,
+// exit code 0, no warning, retention quietly off. It must sit under the
+// project's temp root, which is wiped at the start of every build - written
+// anywhere else it either leaks forever or, in the projects root, shows up in
+// listings as a project of its own. And the flag has to be there at all.
+func TestGenerateInvokesAwesomeWithConfigPath(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "argv")
+	g := newTestGenerator(t, fakeCLI(t, cliRecordArgv(dump)), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("reading recorded argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
+
+	got, ok := flagValue(argv, "--config")
+	if !ok {
+		t.Fatalf("argv = %q, want it to carry --config", argv)
+	}
+	if filepath.Ext(got) != ".json" {
+		t.Errorf("--config = %q, want a .json file - the CLI ignores any other extension without saying so", got)
+	}
+	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
+		t.Errorf("--config = %q, want it written under %q", got, tmp)
+	}
+}
+
+// TestGenerateWritesTheLimitIntoTheConfig checks the content of that file as
+// the CLI sees it: the right key, spelled the way Allure spells it, holding the
+// number the generator was built with.
+//
+// The key is the fragile part. It is a struct tag, so nothing in Go checks it -
+// drop the tag and encoding/json happily writes "HistoryLimit", which the CLI
+// does not recognise and ignores without complaint, leaving history to grow
+// forever.
+func TestGenerateWritesTheLimitIntoTheConfig(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "config")
+	g := newTestGenerator(t, fakeCLI(t, cliDumpConfig(dump)), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("reading the config the CLI was given: %v", err)
+	}
+
+	var got struct {
+		HistoryLimit *int `json:"historyLimit"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("config %q is not valid JSON: %v", raw, err)
+	}
+	if got.HistoryLimit == nil {
+		t.Fatalf("config = %s, want a historyLimit key spelled exactly that way", raw)
+	}
+	if *got.HistoryLimit != testHistoryLimit {
+		t.Errorf("historyLimit = %d, want the generator's %d", *got.HistoryLimit, testHistoryLimit)
+	}
+}
+
+// TestWriteAllureConfigKeepsAZeroLimit guards the one value that must never be
+// optimised away. Zero is not "unset" here: Allure reads a missing historyLimit
+// as "keep everything" and a present zero as "throw the history away", and a
+// zero is exactly what main passes when KEEP_HISTORY is off. An omitempty on
+// the field would turn switching history off into switching it on.
+func TestWriteAllureConfigKeepsAZeroLimit(t *testing.T) {
+	path, err := writeAllureConfig(t.TempDir(), 0)
+	if err != nil {
+		t.Fatalf("writeAllureConfig = %v, want nil", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading written config: %v", err)
+	}
+	if got, want := string(raw), `{"historyLimit":0}`; got != want {
+		t.Errorf("config = %s, want %s", got, want)
 	}
 }
 
@@ -596,7 +765,7 @@ func TestTryStartClaimsExactlyOnceUnderConcurrency(t *testing.T) {
 	const rounds, callers = 200, 40
 
 	for round := range rounds {
-		g := New("unused-dir", "unused-cli") // tryStart never touches disk
+		g := New("unused-dir", "unused-cli", testHistoryLimit) // tryStart never touches disk
 
 		var ready, done sync.WaitGroup
 		ready.Add(callers)

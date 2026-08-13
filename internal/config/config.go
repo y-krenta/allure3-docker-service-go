@@ -31,8 +31,8 @@ func Load() Config {
 	var config Config
 	config.Port = cmp.Or(os.Getenv("PORT"), "5050")
 	config.SecurityEnable = getEnvAsBool("SECURITY_ENABLED", false)
-	config.KeepHistory = getEnvAsBool("KEEP_HISTORY", false)
-	config.KeepHistoryLatest = getEnvAsInt("KEEP_HISTORY_LATEST", 25)
+	config.KeepHistory = getEnvAsBool("KEEP_HISTORY", true)
+	config.KeepHistoryLatest = getEnvAsInt("KEEP_HISTORY_LATEST", 60)
 	config.CheckResultsInterval = getEnvAsDurationSeconds("CHECK_RESULTS_EVERY_SECONDS", 0)
 	config.OptimizeStorage = getEnvAsBool("OPTIMIZE_STORAGE", false)
 	config.TLS = getEnvAsBool("TLS", false)

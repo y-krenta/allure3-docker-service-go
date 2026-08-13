@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,10 +19,23 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-// generateTimeout caps a single Allure run. It is generous because a large
-// project's report legitimately takes minutes to build; the point is only to
-// stop a wedged CLI from holding the project's lock forever.
-const generateTimeout = time.Minute * 10
+const (
+	// generateTimeout caps a single Allure run. It is generous because a large
+	// project's report legitimately takes minutes to build; the point is only to
+	// stop a wedged CLI from holding the project's lock forever.
+	generateTimeout = time.Minute * 10
+
+	// maxStderrBytes caps how much of a failed CLI run's stderr is carried into
+	// the returned error. The tail is kept rather than the head: fed a
+	// malformed history file the CLI echoes the whole offending line first -
+	// tens of kilobytes of JSON - and names the actual problem only at the very
+	// end, so cutting from the front would keep the noise and drop the reason.
+	//
+	// Four kilobytes is far more than a Node stack trace needs; the point is
+	// only that one broken build cannot put fifty kilobytes into every log line
+	// and every status response that quotes the error.
+	maxStderrBytes = 1024 * 4
+)
 
 // State is where a project's report generation currently stands. The values
 // are part of the HTTP API and travel to clients unchanged, so renaming one is
@@ -58,8 +72,9 @@ type Status struct {
 //
 // Use New to obtain an instance; the zero value is not usable.
 type Generator struct {
-	projectsDir string // base directory holding every project's results and reports
-	allureBin   string // name or path of the Allure CLI executable
+	projectsDir  string // base directory holding every project's results and reports
+	allureBin    string // name or path of the Allure CLI executable
+	historyLimit int    // past runs kept in a project's history; 0 discards it entirely
 
 	// mu guards both maps below, and is held only for the map operation
 	// itself, never for a build: what a build holds for its whole duration is
@@ -95,12 +110,20 @@ var (
 // and shells out to allureBin, the name or path of the Allure CLI executable.
 // It returns a pointer because a Generator carries a mutex and must never be
 // copied.
-func New(projectsDir, allureBin string) *Generator {
+//
+// historyLimit is how many past runs a project's history keeps, which is also
+// how many points of trend its report shows. Zero means no history at all: it
+// truncates the file on every build, and it is what the caller passes to turn
+// the feature off. There is no value here for "unlimited" - the service always
+// states a number - so a caller that forgets this argument silently disables
+// history rather than leaving it alone.
+func New(projectsDir, allureBin string, historyLimit int) *Generator {
 	return &Generator{
-		projectsDir: projectsDir,
-		allureBin:   allureBin,
-		locks:       make(map[string]*sync.Mutex),
-		statuses:    make(map[string]Status),
+		projectsDir:  projectsDir,
+		allureBin:    allureBin,
+		historyLimit: historyLimit,
+		locks:        make(map[string]*sync.Mutex),
+		statuses:     make(map[string]Status),
 	}
 }
 
@@ -258,13 +281,17 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	}
 	defer func() { _ = os.RemoveAll(outDir) }()
 
+	path, err := writeAllureConfig(tmp, g.historyLimit)
+	if err != nil {
+		return err
+	}
 	historyPath := projects.HistoryFile(g.projectsDir, projectID)
 	copyHistory := filepath.Join(tmp, "history.jsonl")
 	err = stageHistory(historyPath, copyHistory)
 	if err != nil {
 		return fmt.Errorf("copying history: %w", err)
 	}
-	err = g.runAllure(ctx, projects.ResultsDir(g.projectsDir, projectID), outDir, copyHistory)
+	err = g.runAllure(ctx, projects.ResultsDir(g.projectsDir, projectID), outDir, copyHistory, path)
 	if err != nil {
 		return fmt.Errorf("running allure: %w", err)
 	}
@@ -332,11 +359,18 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 // It must be a copy staged for this build, not the project's real history.
 // Callers own the copying and the publishing; see Generate.
 //
+// The config file passed with --config exists for one setting: how many past
+// runs the CLI keeps in that history file. The awesome subcommand has no
+// --history-limit flag - only generate and history do - so the limit can only
+// reach it through a config, and the CLI trims the file itself while appending
+// this run. See writeAllureConfig for how the file is built and why its name
+// matters.
+//
 // The CLI's stderr is captured and carried into the returned error: without it
 // a failed build reports nothing but an exit status. A missing executable is
 // reported as an error wrapping exec.ErrNotFound, which is a deployment
 // problem rather than a problem with the results.
-func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPath string) error {
+func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPath, configPath string) error {
 	cmd := exec.CommandContext(
 		ctx,
 		g.allureBin,
@@ -344,6 +378,7 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPa
 		resultsDir,
 		"--output", outDir,
 		"--history-path", historyPath,
+		"--config", configPath,
 	)
 
 	var stderr bytes.Buffer
@@ -355,8 +390,17 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPa
 	}
 
 	if err != nil {
-		return fmt.Errorf("running allure awesome command: %w, stderr: %s", err,
-			strings.TrimSpace(stderr.String()))
+		msg := strings.TrimSpace(stderr.String())
+		if len(msg) > maxStderrBytes {
+			msg = msg[len(msg)-maxStderrBytes:]
+		}
+
+		return fmt.Errorf(
+			"running allure awesome command: %w, stderr (last %d bytes): %s",
+			err,
+			maxStderrBytes,
+			strings.ToValidUTF8(msg, ""),
+		)
 	}
 	return nil
 }
@@ -437,4 +481,46 @@ func stageHistory(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o644)
+}
+
+// allureConfig is the slice of the Allure CLI's config file this service sets.
+// Everything omitted keeps the CLI's own default, so the file is deliberately
+// tiny: it exists for one setting the awesome subcommand has no flag for.
+//
+// The key is spelled the way Allure spells it and nothing in Go checks that.
+// Rename the field without fixing the tag and encoding/json writes a key the
+// CLI does not know, which it ignores in silence - no warning, no exit code -
+// leaving history to grow without a bound.
+type allureConfig struct {
+	// HistoryLimit is how many past runs the CLI keeps in the history file.
+	// Zero is not "no limit": the CLI reads a missing key as "keep
+	// everything" and a zero as "truncate the history to nothing".
+	HistoryLimit int `json:"historyLimit"`
+}
+
+// writeAllureConfig writes the config for a single Allure run into dir and
+// returns the path to it. dir must exist; the file is scratch, and the staging
+// directory it lives in is cleared by the next build of the same project.
+//
+// The name ends in .json because the CLI dispatches on the extension when it
+// loads a config and skips anything it does not recognise without a word, so a
+// typo here does not fail a build - it quietly turns retention off.
+//
+// The file carries the retention limit and nothing else. The limit belongs on
+// the command line in spirit, but only the generate and history subcommands
+// take --history-limit; awesome, which is what builds the report, reads it from
+// a config file or not at all.
+func writeAllureConfig(dir string, limit int) (string, error) {
+	data, err := json.Marshal(allureConfig{HistoryLimit: limit})
+	if err != nil {
+		return "", fmt.Errorf("marshaling allure config: %w", err)
+	}
+
+	pathAllureJSON := filepath.Join(dir, "allurerc.json")
+	err = os.WriteFile(pathAllureJSON, data, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("writing allure config: %w", err)
+	}
+
+	return pathAllureJSON, nil
 }

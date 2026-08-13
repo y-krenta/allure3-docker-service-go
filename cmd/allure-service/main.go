@@ -43,7 +43,12 @@ func main() {
 		log.Fatalf("cannot create default result dir %q: %v", pathDefaultResultDir, err)
 	}
 
-	reports := report.New(cfg.ProjectsDir, cfg.AllureBin)
+	historyLimit := cfg.KeepHistoryLatest
+	if !cfg.KeepHistory {
+		historyLimit = 0
+	}
+	log.Printf("history limit %d", historyLimit)
+	reports := report.New(cfg.ProjectsDir, cfg.AllureBin, historyLimit)
 
 	watchCtx, stopWatch := context.WithCancel(context.Background())
 	watchDone := make(chan struct{})
