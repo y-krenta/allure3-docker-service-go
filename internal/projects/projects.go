@@ -143,3 +143,15 @@ func SanitizeResultFileName(name string) (string, error) {
 
 	return name, nil
 }
+
+// HistoryFile returns the path to a project's Allure history:
+// <baseDir>/<projectID>/history.jsonl, one JSON object per past run. The
+// Allure CLI keeps it up to date itself, given the path.
+//
+// It sits in the project root rather than in ResultsDir on purpose. The
+// watcher rebuilds a project when the listing of its results directory
+// changes, and every build appends to this file - inside ResultsDir it would
+// make each build trigger the next one, forever.
+func HistoryFile(baseDir, projectID string) string {
+	return filepath.Join(baseDir, projectID, "history.jsonl")
+}

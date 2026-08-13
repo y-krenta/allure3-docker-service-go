@@ -14,18 +14,37 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-// Shell bodies for the stand-in Allure CLI used by the tests. Both are called
-// the way runAllure calls the real thing: generate <resultsDir> -o <outDir>,
-// so $4 is the output directory.
+// Shell bodies for the stand-in Allure CLI used by the tests. They are called
+// the way runAllure calls the real thing:
+//
+//	awesome <resultsDir> --output <outDir> --history-path <historyPath>
+//
+// so $4 is the output directory. Keep that position in mind when changing the
+// command line: move --output and these bodies write the report somewhere else
+// entirely, and every test that reads it fails at once.
 const (
 	// cliOK mimics a successful build by writing a recognizable report.
 	cliOK = "#!/bin/sh\nprintf 'fresh' > \"$4/index.html\"\n"
 	// cliFail mimics Allure rejecting the results.
 	cliFail = "#!/bin/sh\necho 'boom: broken results' >&2\nexit 3\n"
+	// cliHistory succeeds and appends one line to the history file it was
+	// given, the way the real CLI records a run. $6 is that file.
+	cliHistory = "#!/bin/sh\nprintf 'fresh' > \"$4/index.html\"\necho run >> \"$6\"\n"
+	// cliWreckHistory scribbles over the history file it was given and then
+	// fails, standing in for a build killed mid-write.
+	cliWreckHistory = "#!/bin/sh\nprintf 'half a lin' >> \"$6\"\necho 'boom' >&2\nexit 3\n"
 	// cliSlow succeeds, but takes long enough that a test can observe the
 	// build while it is still running.
 	cliSlow = "#!/bin/sh\nsleep 0.5\nprintf 'fresh' > \"$4/index.html\"\n"
 )
+
+// cliRecordArgv returns a CLI body that dumps its argv, one element per line,
+// into dumpPath before producing a report the way cliOK does. Recording the
+// whole command line rather than reading a fixed position keeps the assertions
+// independent of the order runAllure happens to use.
+func cliRecordArgv(dumpPath string) string {
+	return "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + dumpPath + "\"\nprintf 'fresh' > \"$4/index.html\"\n"
+}
 
 // fakeCLI writes body to an executable file and returns its path, so a test
 // can drive Generate without depending on a real Allure installation.
@@ -305,10 +324,108 @@ func TestGenerateRemovesTempBuildDirs(t *testing.T) {
 func TestRunAllureReportsMissingBinary(t *testing.T) {
 	g := newTestGenerator(t, "definitely-not-an-installed-binary", "demo")
 
-	err := g.runAllure(t.Context(), t.TempDir(), t.TempDir())
+	err := g.runAllure(t.Context(), t.TempDir(), t.TempDir(),
+		filepath.Join(t.TempDir(), "history.jsonl"))
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("runAllure = %v, want an error wrapping exec.ErrNotFound", err)
 	}
+}
+
+// TestGenerateInvokesAwesomeWithHistoryPath pins the command line down to the
+// two parts of it the report's trends depend on: the awesome subcommand, which
+// is the only one that knows about history at all, and the history file the
+// project accumulates its past runs in. Everything else about the build can
+// change without the test noticing; these two cannot.
+func TestGenerateInvokesAwesomeWithHistoryPath(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "argv")
+	g := newTestGenerator(t, fakeCLI(t, cliRecordArgv(dump)), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatalf("reading recorded argv: %v", err)
+	}
+	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
+
+	if argv[0] != "awesome" {
+		t.Errorf("argv = %q, want it to start with the awesome subcommand", argv)
+	}
+
+	got, ok := flagValue(argv, "--history-path")
+	if !ok {
+		t.Fatalf("argv = %q, want it to carry --history-path", argv)
+	}
+	if real := projects.HistoryFile(g.projectsDir, "demo"); got == real {
+		t.Errorf("--history-path = %q, want a staged copy rather than the project's own history", got)
+	}
+	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
+		t.Errorf("--history-path = %q, want it staged under %q", got, tmp)
+	}
+}
+
+// TestGenerateAccumulatesHistoryAcrossBuilds is the test for the staging copy
+// being seeded from the real history. Skip that copy and every build hands the
+// CLI an empty file, which then replaces the accumulated history with a single
+// line - trends silently reset on every build, and nothing else in the suite
+// notices.
+func TestGenerateAccumulatesHistoryAcrossBuilds(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliHistory), "demo")
+
+	const builds = 3
+	for i := range builds {
+		if err := g.Generate(t.Context(), "demo"); err != nil {
+			t.Fatalf("Generate (build %d) = %v, want nil", i+1, err)
+		}
+	}
+
+	b, err := os.ReadFile(projects.HistoryFile(g.projectsDir, "demo"))
+	if err != nil {
+		t.Fatalf("reading published history: %v", err)
+	}
+	if got := strings.Count(string(b), "\n"); got != builds {
+		t.Errorf("history holds %d runs after %d builds, want %d: %q",
+			got, builds, builds, b)
+	}
+}
+
+// TestFailedBuildLeavesHistoryIntact is the reason the CLI is pointed at a
+// copy at all. The CLI writes history in place and cannot be trusted to leave
+// a whole file behind when it dies, and a history ending in half a line fails
+// every later build for good.
+func TestFailedBuildLeavesHistoryIntact(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliWreckHistory), "demo")
+
+	history := projects.HistoryFile(g.projectsDir, "demo")
+	const want = "run one\nrun two\n"
+	if err := os.WriteFile(history, []byte(want), 0o644); err != nil {
+		t.Fatalf("seeding history: %v", err)
+	}
+
+	if err := g.Generate(t.Context(), "demo"); err == nil {
+		t.Fatal("Generate = nil, want the failing CLI to be reported")
+	}
+
+	got, err := os.ReadFile(history)
+	if err != nil {
+		t.Fatalf("reading history after a failed build: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("history after a failed build = %q, want it untouched at %q", got, want)
+	}
+}
+
+// flagValue returns the argument following name in argv. A flag sitting last,
+// with nothing after it, counts as absent: the CLI would reject it anyway.
+func flagValue(argv []string, name string) (string, bool) {
+	for i, arg := range argv {
+		if arg == name && i+1 < len(argv) {
+			return argv[i+1], true
+		}
+	}
+	return "", false
 }
 
 func TestGenerateWithRealAllure(t *testing.T) {
@@ -324,6 +441,14 @@ func TestGenerateWithRealAllure(t *testing.T) {
 	index := filepath.Join(projects.LatestReportDir(g.projectsDir, "demo"), "index.html")
 	if _, err := os.Stat(index); err != nil {
 		t.Errorf("real Allure run left no index.html at %s: %v", index, err)
+	}
+
+	// The fake CLIs cannot prove the path is one the real Allure accepts and
+	// writes to; only a real run can. This is also what would catch the CLI
+	// changing the flag out from under us.
+	history := projects.HistoryFile(g.projectsDir, "demo")
+	if _, err := os.Stat(history); err != nil {
+		t.Errorf("real Allure run left no history at %s: %v", history, err)
 	}
 }
 

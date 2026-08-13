@@ -258,7 +258,13 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	}
 	defer func() { _ = os.RemoveAll(outDir) }()
 
-	err = g.runAllure(ctx, projects.ResultsDir(g.projectsDir, projectID), outDir)
+	historyPath := projects.HistoryFile(g.projectsDir, projectID)
+	copyHistory := filepath.Join(tmp, "history.jsonl")
+	err = stageHistory(historyPath, copyHistory)
+	if err != nil {
+		return fmt.Errorf("copying history: %w", err)
+	}
+	err = g.runAllure(ctx, projects.ResultsDir(g.projectsDir, projectID), outDir, copyHistory)
 	if err != nil {
 		return fmt.Errorf("running allure: %w", err)
 	}
@@ -287,6 +293,20 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	}
 
 	ok = true
+
+	// The history is published after the report, and only ever after it. Dying
+	// between the two renames costs this run its history entry, which the next
+	// build appends again from the same results; dying the other way round
+	// would leave the entry already recorded and the next build would append a
+	// duplicate. A lost entry heals itself, a duplicated one does not.
+	//
+	// A failure here is logged rather than returned: the report is live and
+	// correct at this point, and reporting the build as failed would be a lie
+	// about it.
+	err = os.Rename(copyHistory, historyPath)
+	if err != nil {
+		slog.Error("publishing history", "err", err, "project_id", projectID)
+	}
 	err = os.RemoveAll(old)
 	if err != nil {
 		slog.Error("removing old report directory",
@@ -302,17 +322,28 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 // in either path is interpreted; ctx bounds the run and kills the process if
 // it expires.
 //
+// historyPath is the file the CLI reads the project's past runs from and
+// appends this one to, which is what gives the report its trends. It is an
+// input and an output at once, and the CLI mutates it in place: same inode,
+// growing by one line per run, with no staging and no rename of its own. A run
+// killed mid-write therefore leaves a half-written line behind, and the CLI
+// refuses a history file ending in one - exit 1, empty stderr, no report.
+//
+// It must be a copy staged for this build, not the project's real history.
+// Callers own the copying and the publishing; see Generate.
+//
 // The CLI's stderr is captured and carried into the returned error: without it
 // a failed build reports nothing but an exit status. A missing executable is
 // reported as an error wrapping exec.ErrNotFound, which is a deployment
 // problem rather than a problem with the results.
-func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir string) error {
+func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPath string) error {
 	cmd := exec.CommandContext(
 		ctx,
 		g.allureBin,
-		"generate",
+		"awesome",
 		resultsDir,
-		"-o", outDir,
+		"--output", outDir,
+		"--history-path", historyPath,
 	)
 
 	var stderr bytes.Buffer
@@ -324,7 +355,7 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir string) er
 	}
 
 	if err != nil {
-		return fmt.Errorf("running allure generate command: %w, stderr: %s", err,
+		return fmt.Errorf("running allure awesome command: %w, stderr: %s", err,
 			strings.TrimSpace(stderr.String()))
 	}
 	return nil
@@ -392,4 +423,18 @@ func (g *Generator) Start(ctx context.Context, projectID string) error {
 	}()
 
 	return nil
+}
+
+// stageHistory copies the project's history file to dst, where the Allure CLI
+// can append to it without the real file being at risk. A missing src is not
+// an error: a project builds its first report with no history at all.
+func stageHistory(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
 }

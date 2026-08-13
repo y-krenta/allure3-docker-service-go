@@ -225,3 +225,21 @@ func TestCreateDir(t *testing.T) {
 		}
 	})
 }
+
+// TestHistoryFileStaysOutOfResults guards the one property of the history
+// path that is not a matter of taste. Every build appends to this file, and
+// the watcher rebuilds a project whenever the listing of its results
+// directory changes — put the two together and each build schedules the next
+// one, forever. Moving the file under ResultsDir compiles, passes every other
+// test, and only shows up in production as a project that rebuilds itself in
+// a loop.
+func TestHistoryFileStaysOutOfResults(t *testing.T) {
+	base := t.TempDir()
+
+	history := HistoryFile(base, "demo")
+	results := ResultsDir(base, "demo") + string(filepath.Separator)
+
+	if strings.HasPrefix(history, results) {
+		t.Errorf("HistoryFile = %q, want it outside the results dir %q", history, results)
+	}
+}
