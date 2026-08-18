@@ -28,7 +28,7 @@ func scan(dir string) (fingerprint, error) {
 	var fp fingerprint
 
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || entry.Name() == projects.ExecutorFileName {
 			continue
 		}
 		info, err := entry.Info()

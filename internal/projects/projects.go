@@ -29,6 +29,11 @@ const (
 	// bootstrapped on startup and cannot be deleted (see the httpapi
 	// deleteProject handler).
 	DefaultProjectID = "default"
+	// ExecutorFileName is the fixed name of the executor metadata file the
+	// service writes into ResultsDir before a build. The watcher must skip
+	// it when fingerprinting results, or writing it would look like new
+	// results and trigger another build.
+	ExecutorFileName = "executor.json"
 )
 
 // ResultsDir returns the path where a project's raw Allure results live:

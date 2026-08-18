@@ -129,6 +129,40 @@ func TestScanTracksNewestModTime(t *testing.T) {
 	}
 }
 
+func TestScanIgnoresExecutorFile(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, "a-result.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before, err := scan(dir)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, projects.ExecutorFileName), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	afterExecutor, err := scan(dir)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if afterExecutor != before {
+		t.Errorf("fingerprint changed after writing %s: before=%+v after=%+v", projects.ExecutorFileName, before, afterExecutor)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "b-result.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	afterResult, err := scan(dir)
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if afterResult == afterExecutor {
+		t.Error("fingerprint did not change after writing an ordinary result file")
+	}
+}
+
 func TestScanMissingDirReturnsError(t *testing.T) {
 	_, err := scan(filepath.Join(t.TempDir(), "nope"))
 	if err == nil {
