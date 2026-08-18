@@ -26,6 +26,7 @@ func (s *Server) Routes() http.Handler {
 	r.HandleFunc("POST "+projectsEndpoint+"/{id}/results", s.sendResults)
 	r.HandleFunc("POST "+projectsEndpoint+"/{id}/generation", s.startGeneration)
 	r.HandleFunc("DELETE "+projectsEndpoint+"/{id}", s.deleteProject)
+	r.HandleFunc("DELETE "+projectsEndpoint+"/{id}/results", s.clearResults)
 	return recoverer(requestID(logger(r)))
 }
 

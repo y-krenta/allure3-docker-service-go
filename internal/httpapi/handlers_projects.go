@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
+	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
 // createProjectRequest is the JSON body expected by createProject.
@@ -200,4 +201,29 @@ func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 	rootDir := os.DirFS(projects.ReportsDir(s.projectsDir, id))
 	http.ServeFileFS(w, r, rootDir, reportPath)
 
+}
+
+// clearResults handles DELETE /projects/{id}/results. Removes the
+// top-level files in the project's results directory; subdirectories are
+// left alone. Responds 204 on success, including when results was already
+// empty, 400 if id fails projects.ValidateProjectID, and 404 if the
+// project has no results directory.
+func (s *Server) clearResults(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireProjectID(w, r)
+	if !ok {
+		return
+	}
+
+	err := s.reports.ClearResults(id)
+	if errors.Is(err, report.ErrProjectNotFound) {
+		http.Error(w, "project not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("failed to clear results", "err", err)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

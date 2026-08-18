@@ -19,6 +19,10 @@ type reportGenerator interface {
 	// Status returns the state of the last build started for projectID, and
 	// false if none ever was.
 	Status(projectID string) (report.Status, bool)
+
+	// ClearResults removes projectID's top-level result files, under the
+	// same per-project lock Start/Generate use.
+	ClearResults(projectID string) error
 }
 
 // Server holds the shared dependencies for HTTP handlers: the base directory

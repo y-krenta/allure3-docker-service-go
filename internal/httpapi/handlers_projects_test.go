@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
+	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
 // writeBuild creates <projectsDir>/<id>/reports/<build>/index.html and stamps
@@ -212,6 +215,76 @@ func TestDeleteProject(t *testing.T) {
 
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+	})
+}
+
+func TestClearResults(t *testing.T) {
+	t.Run("clears and answers 204 with no body", func(t *testing.T) {
+		gen := &stubGenerator{}
+		s := newStubServer(gen)
+
+		w := callWithPath(s.clearResults, http.MethodDelete, "/projects/demo/results",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNoContent, w.Body)
+		}
+		if got := w.Body.String(); got != "" {
+			t.Errorf("body = %q, want empty", got)
+		}
+		if len(gen.clearedWith) != 1 || gen.clearedWith[0] != "demo" {
+			t.Errorf("ClearResults called with %v, want exactly one call for %q", gen.clearedWith, "demo")
+		}
+	})
+
+	t.Run("unknown project is not found", func(t *testing.T) {
+		s := newStubServer(&stubGenerator{
+			clearErr: fmt.Errorf("%w: demo", report.ErrProjectNotFound),
+		})
+
+		w := callWithPath(s.clearResults, http.MethodDelete, "/projects/demo/results",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
+		}
+		// A handler that forgot to return after the 404 branch falls through
+		// into the 500 branch next: the recorder keeps the first status code
+		// either way, so only the body gives away the missing return.
+		if body := w.Body.String(); strings.Contains(body, msgInternalError) {
+			t.Errorf("body = %q, contains the 500 message too: a return is missing after the 404 write", body)
+		}
+	})
+
+	t.Run("a server error keeps its cause to itself", func(t *testing.T) {
+		s := newStubServer(&stubGenerator{
+			clearErr: errors.New("removing /app/projects/demo/results/x.json: permission denied"),
+		})
+
+		w := callWithPath(s.clearResults, http.MethodDelete, "/projects/demo/results",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body)
+		}
+		if body := w.Body.String(); strings.Contains(body, "/app/projects") {
+			t.Errorf("body = %q, want no internal paths", body)
+		}
+	})
+
+	t.Run("a malformed id never reaches the generator", func(t *testing.T) {
+		gen := &stubGenerator{}
+		s := newStubServer(gen)
+
+		w := callWithPath(s.clearResults, http.MethodDelete, "/projects/BAD_ID/results",
+			nil, map[string]string{"id": "BAD_ID"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+		if len(gen.clearedWith) != 0 {
+			t.Errorf("ClearResults was called with %v, want no call at all", gen.clearedWith)
 		}
 	})
 }

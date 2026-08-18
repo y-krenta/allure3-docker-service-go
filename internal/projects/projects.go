@@ -122,6 +122,34 @@ func CreateDir(baseDir, id string) error {
 	return nil
 }
 
+// ClearResults removes the top-level files in a project's results
+// directory, leaving any subdirectories in place. It mirrors the
+// "-maxdepth 1 -type f" behaviour of the original cleanAllureResults.sh:
+// a directory sitting in results/ is left for whatever put it there.
+//
+// A missing results directory is returned as-is (wrapping fs.ErrNotExist)
+// rather than translated to a sentinel here - that is the caller's job,
+// the same as with a plain os.ReadDir elsewhere in this package.
+func ClearResults(baseDir, projectID string) error {
+	resultsDir := ResultsDir(baseDir, projectID)
+
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		err := os.Remove(filepath.Join(resultsDir, entry.Name()))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SanitizeResultFileName reduces a client-supplied file name to a single
 // path element safe to create inside a project's results directory.
 //
@@ -168,5 +196,4 @@ func HistoryFile(baseDir, projectID string) string {
 func NumberedReportDir(baseDir, projectID string, n int) string {
 	path := filepath.Join(ReportsDir(baseDir, projectID), fmt.Sprintf("%d", n))
 	return path
-
 }

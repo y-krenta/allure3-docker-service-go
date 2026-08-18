@@ -707,3 +707,32 @@ func numberedReportDirs(entries []os.DirEntry) []int {
 
 	return numbers
 }
+
+// ClearResults removes projectID's top-level result files (see
+// projects.ClearResults), serialized against Generate/Start under the same
+// per-project lock: without it, a build reading results/ while this runs
+// could see the directory emptied out from under it mid-scan.
+//
+// It returns a validation error for a malformed project ID, and wraps
+// ErrProjectNotFound if the project has no results directory. Clearing an
+// already-empty results directory is not an error - the caller asked for
+// empty and got it.
+func (g *Generator) ClearResults(projectID string) error {
+	err := projects.ValidateProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	mu := g.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	err = projects.ClearResults(g.projectsDir, projectID)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: %s", ErrProjectNotFound, projectID)
+	}
+	if err != nil {
+		return fmt.Errorf("clearing results directory: %w", err)
+	}
+
+	return nil
+}

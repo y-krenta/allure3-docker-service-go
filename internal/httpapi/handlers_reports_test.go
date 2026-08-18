@@ -19,11 +19,13 @@ import (
 // a failure, so the branches that matter here are unreachable through it.
 type stubGenerator struct {
 	startErr error // returned by Start
+	clearErr error // returned by ClearResults
 
 	status    report.Status // returned by Status
 	hasStatus bool
 
 	startedWith []string // project IDs Start was called with, in order
+	clearedWith []string // project IDs ClearResults was called with, in order
 }
 
 func (g *stubGenerator) Start(_ context.Context, projectID string) error {
@@ -33,6 +35,11 @@ func (g *stubGenerator) Start(_ context.Context, projectID string) error {
 
 func (g *stubGenerator) Status(string) (report.Status, bool) {
 	return g.status, g.hasStatus
+}
+
+func (g *stubGenerator) ClearResults(projectID string) error {
+	g.clearedWith = append(g.clearedWith, projectID)
+	return g.clearErr
 }
 
 // newStubServer returns a Server whose only working dependency is gen; the
