@@ -160,3 +160,13 @@ func SanitizeResultFileName(name string) (string, error) {
 func HistoryFile(baseDir, projectID string) string {
 	return filepath.Join(baseDir, projectID, "history.jsonl")
 }
+
+// NumberedReportDir returns the path to a project's archived report build
+// numbered n, a subdirectory of ReportsDir alongside LatestReportDir. n comes
+// from the build's own count of past reports, not from any input a caller
+// controls.
+func NumberedReportDir(baseDir, projectID string, n int) string {
+	path := filepath.Join(ReportsDir(baseDir, projectID), fmt.Sprintf("%d", n))
+	return path
+
+}

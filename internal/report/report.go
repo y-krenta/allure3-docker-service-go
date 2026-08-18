@@ -243,6 +243,14 @@ func (g *Generator) checkProject(projectID string) error {
 // itself fails. Stale staging directories left by an earlier crash are cleared
 // at the start of each build, under the project's lock.
 //
+// Before the CLI runs, the build claims the next build number
+// (getNextBuildNumber) and, from the second build on, records it in
+// executor.json (writeExecutor). After a successful publish, the report is
+// additionally archived to its own numbered directory
+// (projects.NumberedReportDir) alongside the published "latest" - a
+// best-effort copy, since the report is already live and correct by that
+// point and a failed archive should not be reported as a failed build.
+//
 // It returns ErrProjectNotFound (wrapped) if the project has no results
 // directory, ErrNoResults (wrapped) if that directory is empty, an error
 // wrapping ctx.Err() if the context is already done by
@@ -334,6 +342,12 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	}
 
 	ok = true
+
+	dst := projects.NumberedReportDir(g.projectsDir, projectID, buildNumber)
+	err = os.CopyFS(dst, os.DirFS(latest))
+	if err != nil {
+		slog.Error("archiving report", "err", err, "project_id", projectID)
+	}
 
 	// The history is published after the report, and only ever after it. Dying
 	// between the two renames costs this run its history entry, which the next

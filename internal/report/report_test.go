@@ -719,6 +719,62 @@ func TestGenerateWritesExecutorWhenAPreviousBuildIsArchived(t *testing.T) {
 	}
 }
 
+func TestGenerateArchivesFirstBuildAtNumberOne(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	archived := filepath.Join(projects.NumberedReportDir(g.projectsDir, "demo", 1), "index.html")
+	body, err := os.ReadFile(archived)
+	if err != nil {
+		t.Fatalf("reading archived report: %v", err)
+	}
+	if string(body) != "fresh" {
+		t.Errorf("archived report = %q, want %q", body, "fresh")
+	}
+}
+
+func TestGenerateArchivesUnderTheNextBuildNumber(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	reports := projects.ReportsDir(g.projectsDir, "demo")
+	if err := os.Mkdir(filepath.Join(reports, "3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	archived := filepath.Join(projects.NumberedReportDir(g.projectsDir, "demo", 4), "index.html")
+	if _, err := os.Stat(archived); err != nil {
+		t.Errorf("archived report at build 4 missing: %v", err)
+	}
+}
+
+func TestGenerateArchiveFailureDoesNotFailTheBuild(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	// A plain file sitting where the archive directory needs to go.
+	// getNextBuildNumber ignores non-dir entries when picking the next
+	// number, so this does not shift it away from 1 - but os.CopyFS still
+	// cannot create a directory where a file already exists.
+	reports := projects.ReportsDir(g.projectsDir, "demo")
+	if err := os.WriteFile(filepath.Join(reports, "1"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil (archiving is best-effort)", err)
+	}
+
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want %q; a failed archive must not affect publishing", got, "fresh")
+	}
+}
+
 // TestGenerateAccumulatesHistoryAcrossBuilds is the test for the staging copy
 // being seeded from the real history. Skip that copy and every build hands the
 // CLI an empty file, which then replaces the accumulated history with a single
