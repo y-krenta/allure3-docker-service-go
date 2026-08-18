@@ -775,6 +775,106 @@ func TestGenerateArchiveFailureDoesNotFailTheBuild(t *testing.T) {
 	}
 }
 
+func TestPruneReportsKeepsAllWhenUnderTheLimit(t *testing.T) {
+	dir := t.TempDir()
+	if err := projects.CreateDir(dir, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	g := New(dir, "unused-cli", 3)
+
+	reports := projects.ReportsDir(dir, "demo")
+	for _, name := range []string{"1", "2"} {
+		if err := os.Mkdir(filepath.Join(reports, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := g.pruneReports("demo"); err != nil {
+		t.Fatalf("pruneReports = %v, want nil", err)
+	}
+
+	for _, name := range []string{"1", "2"} {
+		if _, err := os.Stat(filepath.Join(reports, name)); err != nil {
+			t.Errorf("reports/%s missing after prune, want it kept (fewer builds than the limit): %v", name, err)
+		}
+	}
+}
+
+func TestPruneReportsDeletesOldestByNumber(t *testing.T) {
+	dir := t.TempDir()
+	if err := projects.CreateDir(dir, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	g := New(dir, "unused-cli", 3)
+
+	reports := projects.ReportsDir(dir, "demo")
+	// "10" sorts before "9" lexicographically - this data catches a prune that
+	// forgot to sort numerically before cutting the slice.
+	for _, name := range []string{"1", "2", "3", "7", "9", "10", "latest"} {
+		if err := os.Mkdir(filepath.Join(reports, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := g.pruneReports("demo"); err != nil {
+		t.Fatalf("pruneReports = %v, want nil", err)
+	}
+
+	for _, name := range []string{"1", "2", "3"} {
+		if _, err := os.Stat(filepath.Join(reports, name)); !os.IsNotExist(err) {
+			t.Errorf("reports/%s still exists, want the three oldest builds pruned (err = %v)", name, err)
+		}
+	}
+	for _, name := range []string{"7", "9", "10", "latest"} {
+		if _, err := os.Stat(filepath.Join(reports, name)); err != nil {
+			t.Errorf("reports/%s missing after prune, want the newest builds and latest kept: %v", name, err)
+		}
+	}
+}
+
+func TestPruneReportsReadDirErrorPropagates(t *testing.T) {
+	dir := t.TempDir()
+	g := New(dir, "unused-cli", 3) // no project created: ReportsDir does not exist
+
+	if err := g.pruneReports("missing"); err == nil {
+		t.Fatal("pruneReports = nil, want an error when the reports directory can't be read")
+	}
+}
+
+// TestGenerateContinuesWhenPruneReportsFails forces pruneReports' only error
+// path - the reports directory becoming unreadable - from inside the fake
+// CLI itself, since that is the one point in Generate between the build
+// number being read and pruneReports running.
+func TestGenerateContinuesWhenPruneReportsFails(t *testing.T) {
+	dir := t.TempDir()
+	if err := projects.CreateDir(dir, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	writeResult(t, dir, "demo")
+	g := New(dir, "unused-cli", testHistoryLimit)
+
+	reports := projects.ReportsDir(dir, "demo")
+	// 0300: write+execute survive, so the rename of "latest" and the mkdir for
+	// the archive (both done by name, not by listing) still succeed; only
+	// os.ReadDir, which needs read permission to enumerate entries, fails -
+	// isolating the one operation pruneReports performs.
+	g.allureBin = fakeCLI(t, "#!/bin/sh\n"+
+		"chmod 300 \""+reports+"\"\n"+
+		"printf 'fresh' > \"$4/index.html\"\n")
+
+	// Restore permissions before the temp dir's own cleanup tries to remove
+	// the tree; a directory without read permission cannot be listed to
+	// delete its contents.
+	t.Cleanup(func() { _ = os.Chmod(reports, 0o755) })
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil (a failed prune must not fail the build)", err)
+	}
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want %q", got, "fresh")
+	}
+}
+
 // TestGenerateAccumulatesHistoryAcrossBuilds is the test for the staging copy
 // being seeded from the real history. Skip that copy and every build hands the
 // CLI an empty file, which then replaces the accumulated history with a single

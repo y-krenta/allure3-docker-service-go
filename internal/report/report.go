@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -349,6 +350,11 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 		slog.Error("archiving report", "err", err, "project_id", projectID)
 	}
 
+	err = g.pruneReports(projectID)
+	if err != nil {
+		slog.Error("pruning reports", "err", err, "project_id", projectID)
+	}
+
 	// The history is published after the report, and only ever after it. Dying
 	// between the two renames costs this run its history entry, which the next
 	// build appends again from the same results; dying the other way round
@@ -580,18 +586,12 @@ func (g *Generator) getNextBuildNumber(projectID string) (int, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return 0, fmt.Errorf("reading reports directory for project %q: %w", projectID, err)
-
 	}
-	maxNumber := 0
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		number, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
+	maxNumber := 0
+	numbers := numberedReportDirs(entries)
+
+	for _, number := range numbers {
 		if number > maxNumber {
 			maxNumber = number
 		}
@@ -653,4 +653,57 @@ func writeExecutor(resultsDir, projectID string, buildOrder int) error {
 	}
 
 	return nil
+}
+
+func (g *Generator) pruneReports(projectID string) error {
+	entries, err := os.ReadDir(projects.ReportsDir(g.projectsDir, projectID))
+	if err != nil {
+		return fmt.Errorf("reading reports directory for project %q: %w", projectID, err)
+	}
+
+	maxNumber := g.historyLimit
+
+	numbers := numberedReportDirs(entries)
+	lenNumbers := len(numbers)
+
+	if lenNumbers <= maxNumber {
+		return nil
+	}
+
+	slices.Sort(numbers)
+
+	for _, number := range numbers[:lenNumbers-maxNumber] {
+		err := os.RemoveAll(
+			projects.NumberedReportDir(g.projectsDir, projectID, number),
+		)
+		if err != nil {
+			slog.Error(
+				"removing report",
+				"err", err,
+				"project_id", projectID,
+				"build_number", number,
+			)
+		}
+	}
+
+	return nil
+}
+
+func numberedReportDirs(entries []os.DirEntry) []int {
+	numbers := make([]int, 0, len(entries))
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		number, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+
+		numbers = append(numbers, number)
+	}
+
+	return numbers
 }
