@@ -263,6 +263,7 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 		return fmt.Errorf("waiting for project lock: %w", ctx.Err())
 	}
 
+	pathResultDir := projects.ResultsDir(g.projectsDir, projectID)
 	tmp := projects.TmpRoot(g.projectsDir, projectID)
 
 	err = os.RemoveAll(tmp)
@@ -286,13 +287,25 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	if err != nil {
 		return err
 	}
+
+	buildNumber, err := g.getNextBuildNumber(projectID)
+	if err != nil {
+		return err
+	}
+
+	err = writeExecutor(pathResultDir, projectID, buildNumber)
+	if err != nil {
+		return err
+	}
+
 	historyPath := projects.HistoryFile(g.projectsDir, projectID)
 	copyHistory := filepath.Join(tmp, "history.jsonl")
 	err = stageHistory(historyPath, copyHistory)
 	if err != nil {
 		return fmt.Errorf("copying history: %w", err)
 	}
-	err = g.runAllure(ctx, projects.ResultsDir(g.projectsDir, projectID), outDir, copyHistory, path)
+
+	err = g.runAllure(ctx, pathResultDir, outDir, copyHistory, path)
 	if err != nil {
 		return fmt.Errorf("running allure: %w", err)
 	}
@@ -571,4 +584,59 @@ func (g *Generator) getNextBuildNumber(projectID string) (int, error) {
 	}
 
 	return maxNumber + 1, nil
+}
+
+// executorFile is the slice of Allure's executor.json this service sets. All
+// eight keys are recognized by the CLI, but only the ones filled in here are
+// meaningful without CI integration; the rest are left as their zero value
+// and dropped by omitempty rather than written out empty.
+//
+// Field names carry the exact JSON keys Allure's reader expects
+// (allure2_executor); a typo in a tag is silently ignored by the reader, not
+// rejected, so a renamed field without a matching tag fix just stops showing
+// up in the report.
+type executorFile struct {
+	Name       string `json:"name,omitempty"`
+	Type       string `json:"type,omitempty"`
+	URL        string `json:"url,omitempty"`
+	BuildOrder int    `json:"buildOrder"`
+	BuildName  string `json:"buildName,omitempty"`
+	BuildURL   string `json:"buildUrl,omitempty"`
+	ReportName string `json:"reportName,omitempty"`
+	ReportURL  string `json:"reportUrl,omitempty"`
+}
+
+// writeExecutor writes executor.json into resultsDir, describing the build
+// numbered buildOrder. Unlike writeAllureConfig's scratch file, this one is
+// written directly into the project's results directory rather than staged in
+// tmp: the CLI reads it from there as one more result file, and it is meant
+// to persist across builds, overwritten by each one rather than cleaned up.
+//
+// buildOrder <= 1 means no earlier numbered report exists yet, so there is
+// nothing meaningful to record; writeExecutor does nothing rather than write
+// a file with empty fields, which is what left the original Python service
+// writing a file so empty the CLI complained about it on stderr.
+func writeExecutor(resultsDir, projectID string, buildOrder int) error {
+	if buildOrder <= 1 {
+		return nil
+	}
+
+	resp := executorFile{
+		BuildOrder: buildOrder,
+		BuildName:  fmt.Sprintf("%s #%d", projectID, buildOrder),
+		ReportName: fmt.Sprintf("%s #%d", projectID, buildOrder),
+		ReportURL:  fmt.Sprintf("../%d/index.html", buildOrder),
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshaling executor file: %w", err)
+	}
+
+	path := filepath.Join(resultsDir, projects.ExecutorFileName)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing executor file: %w", err)
+	}
+
+	return nil
 }

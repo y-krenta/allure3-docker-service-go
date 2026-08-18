@@ -628,6 +628,97 @@ func TestGetNextBuildNumberIgnoresNonDirEntries(t *testing.T) {
 	}
 }
 
+func TestWriteExecutorSkipsFirstBuild(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := writeExecutor(dir, "demo", 1); err != nil {
+		t.Fatalf("writeExecutor = %v, want nil", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, projects.ExecutorFileName)); !os.IsNotExist(err) {
+		t.Errorf("executor.json exists for the first build, want it absent (err = %v)", err)
+	}
+}
+
+func TestWriteExecutorWritesExpectedFields(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := writeExecutor(dir, "demo", 3); err != nil {
+		t.Fatalf("writeExecutor = %v, want nil", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, projects.ExecutorFileName))
+	if err != nil {
+		t.Fatalf("reading executor.json: %v", err)
+	}
+
+	var got executorFile
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshaling executor.json: %v", err)
+	}
+
+	want := executorFile{
+		BuildOrder: 3,
+		BuildName:  "demo #3",
+		ReportName: "demo #3",
+		ReportURL:  "../3/index.html",
+	}
+	if got != want {
+		t.Errorf("executor.json = %+v, want %+v", got, want)
+	}
+
+	// Fields with nothing to say must be omitted entirely, not written empty -
+	// Allure falls back to its own defaults only when a key is absent.
+	for _, key := range []string{`"name"`, `"type"`, `"url"`, `"buildUrl"`} {
+		if strings.Contains(string(raw), key) {
+			t.Errorf("executor.json = %s, want it without the %s key", raw, key)
+		}
+	}
+}
+
+func TestGenerateSkipsExecutorOnFirstBuild(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	executorPath := filepath.Join(projects.ResultsDir(g.projectsDir, "demo"), projects.ExecutorFileName)
+	if _, err := os.Stat(executorPath); !os.IsNotExist(err) {
+		t.Errorf("executor.json exists after the first build, want it absent (err = %v)", err)
+	}
+}
+
+func TestGenerateWritesExecutorWhenAPreviousBuildIsArchived(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	// Stand in for an already-archived build: Generate doesn't archive reports
+	// into reports/<N> itself yet, so the next build number has to come from a
+	// report directory placed there directly.
+	reports := projects.ReportsDir(g.projectsDir, "demo")
+	if err := os.Mkdir(filepath.Join(reports, "3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	executorPath := filepath.Join(projects.ResultsDir(g.projectsDir, "demo"), projects.ExecutorFileName)
+	raw, err := os.ReadFile(executorPath)
+	if err != nil {
+		t.Fatalf("reading executor.json: %v", err)
+	}
+
+	var got executorFile
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshaling executor.json: %v", err)
+	}
+	if got.BuildOrder != 4 {
+		t.Errorf("buildOrder = %d, want 4 (one past the archived build 3)", got.BuildOrder)
+	}
+}
+
 // TestGenerateAccumulatesHistoryAcrossBuilds is the test for the staging copy
 // being seeded from the real history. Skip that copy and every build hands the
 // CLI an empty file, which then replaces the accumulated history with a single
