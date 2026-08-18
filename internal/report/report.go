@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -534,4 +535,40 @@ func writeAllureConfig(dir string, limit int) (string, error) {
 	}
 
 	return pathAllureJSON, nil
+}
+
+// getNextBuildNumber returns the build number the next report for projectID
+// should carry: one more than the highest existing numeric name under the
+// project's ReportsDir. A project with no numeric report directories yet -
+// including a brand new one - gets 1.
+//
+// The maximum is taken over the parsed numeric value, not over directory
+// order or mtime: os.ReadDir returns entries sorted lexicographically, so
+// "10" sorts before "9", and a build restored from a manual copy can carry an
+// mtime older than builds that came before it. Only the number in the name is
+// reliable. Non-numeric entries, such as "latest", fail strconv.Atoi and are
+// skipped without special-casing them by name.
+func (g *Generator) getNextBuildNumber(projectID string) (int, error) {
+	path := projects.ReportsDir(g.projectsDir, projectID)
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return 0, fmt.Errorf("reading reports directory for project %q: %w", projectID, err)
+
+	}
+	maxNumber := 0
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		number, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		if number > maxNumber {
+			maxNumber = number
+		}
+	}
+
+	return maxNumber + 1, nil
 }

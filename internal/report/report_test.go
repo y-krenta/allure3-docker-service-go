@@ -576,6 +576,58 @@ func TestWriteAllureConfigKeepsAZeroLimit(t *testing.T) {
 	}
 }
 
+func TestGetNextBuildNumberWithNoReportsIsOne(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli", "demo")
+
+	got, err := g.getNextBuildNumber("demo")
+	if err != nil {
+		t.Fatalf("getNextBuildNumber = %v", err)
+	}
+	if got != 1 {
+		t.Errorf("getNextBuildNumber = %d, want 1", got)
+	}
+}
+
+func TestGetNextBuildNumberIsMaxPlusOne(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli", "demo")
+
+	reports := projects.ReportsDir(g.projectsDir, "demo")
+	// "10" sorts before "9" lexicographically, so os.ReadDir hands them back in
+	// that order; a comparison that just takes whichever number comes last
+	// would settle on 9, not 10 - this data catches that mistake.
+	for _, name := range []string{"1", "2", "7", "9", "10", "latest"} {
+		if err := os.Mkdir(filepath.Join(reports, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := g.getNextBuildNumber("demo")
+	if err != nil {
+		t.Fatalf("getNextBuildNumber = %v", err)
+	}
+	if got != 11 {
+		t.Errorf("getNextBuildNumber = %d, want 11 (max numeric name 10, plus one; \"latest\" ignored)", got)
+	}
+}
+
+func TestGetNextBuildNumberIgnoresNonDirEntries(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli", "demo")
+
+	reports := projects.ReportsDir(g.projectsDir, "demo")
+	// A stray file named like a build number must not count as one.
+	if err := os.WriteFile(filepath.Join(reports, "5"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := g.getNextBuildNumber("demo")
+	if err != nil {
+		t.Fatalf("getNextBuildNumber = %v", err)
+	}
+	if got != 1 {
+		t.Errorf("getNextBuildNumber = %d, want 1 (the stray file must be ignored)", got)
+	}
+}
+
 // TestGenerateAccumulatesHistoryAcrossBuilds is the test for the staging copy
 // being seeded from the real history. Skip that copy and every build hands the
 // CLI an empty file, which then replaces the accumulated history with a single
