@@ -23,6 +23,10 @@ type reportGenerator interface {
 	// ClearResults removes projectID's top-level result files, under the
 	// same per-project lock Start/Generate use.
 	ClearResults(projectID string) error
+
+	// ClearHistory resets projectID's trend history and archived builds,
+	// then starts a fresh build under the same per-project lock.
+	ClearHistory(ctx context.Context, projectID string) error
 }
 
 // Server holds the shared dependencies for HTTP handlers: the base directory

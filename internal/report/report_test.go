@@ -1197,3 +1197,164 @@ func TestStartRejectsUnknownAndMalformedProjects(t *testing.T) {
 		t.Errorf("rejected Start left a status behind: %+v", st)
 	}
 }
+
+func TestClearResultsRejectsBadProjectID(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli")
+
+	if err := g.ClearResults("../escape"); err == nil {
+		t.Fatal("ClearResults accepted a project ID containing a path traversal")
+	}
+}
+
+func TestClearResultsUnknownProject(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli")
+
+	err := g.ClearResults("missing")
+	if !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("ClearResults(missing) = %v, want ErrProjectNotFound", err)
+	}
+}
+
+func TestClearResultsClearsFiles(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli", "demo")
+
+	if err := g.ClearResults("demo"); err != nil {
+		t.Fatalf("ClearResults = %v, want nil", err)
+	}
+
+	entries, err := os.ReadDir(projects.ResultsDir(g.projectsDir, "demo"))
+	if err != nil {
+		t.Fatalf("ReadDir after ClearResults: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("results dir after ClearResults = %v, want empty", entries)
+	}
+}
+
+func TestClearResultsSerializesWithABuildInFlight(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	// Simulate a build in flight by holding the project's lock directly, the
+	// same technique TestGenerateSerializesSameProject uses.
+	held := g.lockFor("demo")
+	held.Lock()
+
+	done := make(chan error, 1)
+	go func() { done <- g.ClearResults("demo") }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("ClearResults returned while the project lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	held.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ClearResults after unlock = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ClearResults did not proceed after the project lock was released")
+	}
+}
+
+func TestClearHistoryRejectsBadProjectID(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli")
+
+	if err := g.ClearHistory(t.Context(), "../escape"); err == nil {
+		t.Fatal("ClearHistory accepted a project ID containing a path traversal")
+	}
+}
+
+func TestClearHistoryUnknownProject(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli")
+
+	err := g.ClearHistory(t.Context(), "missing")
+	if !errors.Is(err, ErrProjectNotFound) {
+		t.Fatalf("ClearHistory(missing) = %v, want ErrProjectNotFound", err)
+	}
+}
+
+func TestClearHistoryClearsAndTriggersRebuild(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	archive := projects.NumberedReportDir(g.projectsDir, "demo", 1)
+	if err := os.MkdirAll(archive, 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(archive, "index.html"), []byte("old"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(projects.HistoryFile(g.projectsDir, "demo"), []byte(`{"n":1}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	executor := filepath.Join(projects.ResultsDir(g.projectsDir, "demo"), projects.ExecutorFileName)
+	if err := os.WriteFile(executor, []byte(`{"buildOrder":5}`), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := g.ClearHistory(t.Context(), "demo"); err != nil {
+		t.Fatalf("ClearHistory = %v, want nil", err)
+	}
+
+	if _, err := os.Stat(archive); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("archive still exists (stat err = %v)", err)
+	}
+	if _, err := os.Stat(executor); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("executor.json still exists (stat err = %v)", err)
+	}
+
+	// ClearHistory does not wait for the rebuild it triggers - the report is
+	// only guaranteed once the status catches up.
+	st := waitForState(t, g, "demo", StateSucceeded)
+	if st.Err != nil {
+		t.Errorf("triggered rebuild failed: %v", st.Err)
+	}
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want the rebuild's own %q", got, "fresh")
+	}
+}
+
+func TestClearHistoryRefusesWhenResultsAreEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if err := projects.CreateDir(dir, "demo"); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	g := New(dir, fakeCLI(t, cliOK), testHistoryLimit)
+
+	err := g.ClearHistory(t.Context(), "demo")
+	if !errors.Is(err, ErrNoResults) {
+		t.Fatalf("ClearHistory with empty results = %v, want ErrNoResults", err)
+	}
+}
+
+func TestClearHistorySerializesWithABuildInFlight(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	held := g.lockFor("demo")
+	held.Lock()
+
+	done := make(chan error, 1)
+	go func() { done <- g.ClearHistory(context.Background(), "demo") }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("ClearHistory returned while the project lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	held.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ClearHistory after unlock = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("ClearHistory did not proceed after the project lock was released")
+	}
+
+	waitForState(t, g, "demo", StateSucceeded)
+}

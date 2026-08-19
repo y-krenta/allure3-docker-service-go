@@ -226,6 +226,154 @@ func TestCreateDir(t *testing.T) {
 	})
 }
 
+func TestClearResults(t *testing.T) {
+	t.Run("removes top-level files, leaves subdirectories", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		results := ResultsDir(base, "demo")
+		if err := os.WriteFile(filepath.Join(results, "a-result.json"), []byte("{}"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(results, "b-result.json"), []byte("{}"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		sub := filepath.Join(results, "kept-dir")
+		if err := os.MkdirAll(sub, 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "inside.json"), []byte("{}"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := ClearResults(base, "demo"); err != nil {
+			t.Fatalf("ClearResults returned unexpected error: %v", err)
+		}
+
+		entries, err := os.ReadDir(results)
+		if err != nil {
+			t.Fatalf("ReadDir after ClearResults: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "kept-dir" {
+			t.Fatalf("results dir after ClearResults = %v, want only kept-dir", entries)
+		}
+		if _, err := os.Stat(filepath.Join(sub, "inside.json")); err != nil {
+			t.Errorf("file inside kept-dir was removed: %v", err)
+		}
+	})
+
+	t.Run("already-empty results directory succeeds", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := ClearResults(base, "demo"); err != nil {
+			t.Fatalf("ClearResults on empty results returned unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing results directory reports the error", func(t *testing.T) {
+		base := t.TempDir()
+
+		err := ClearResults(base, "nosuch")
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("ClearResults error = %v, want it to wrap fs.ErrNotExist", err)
+		}
+	})
+}
+
+func TestClearHistory(t *testing.T) {
+	// writeArchive creates <baseDir>/<id>/reports/<name>/index.html so an
+	// archive is a non-empty directory, the same shape a real build leaves -
+	// os.Remove refuses to delete a directory that isn't empty, so a test
+	// against an empty one would not catch that mistake.
+	writeArchive := func(t *testing.T, base, id, name string) {
+		t.Helper()
+		dir := filepath.Join(ReportsDir(base, id), name)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>"+name+"</h1>"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	t.Run("removes numbered archives, leaves latest and non-numeric entries", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		writeArchive(t, base, "demo", "latest")
+		writeArchive(t, base, "demo", "1")
+		writeArchive(t, base, "demo", "2")
+		if err := os.WriteFile(filepath.Join(ReportsDir(base, "demo"), "notes.txt"), nil, 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := ClearHistory(base, "demo"); err != nil {
+			t.Fatalf("ClearHistory returned unexpected error: %v", err)
+		}
+
+		for _, kept := range []string{"latest", "notes.txt"} {
+			if _, err := os.Stat(filepath.Join(ReportsDir(base, "demo"), kept)); err != nil {
+				t.Errorf("%q was removed, want it kept: %v", kept, err)
+			}
+		}
+		for _, gone := range []string{"1", "2"} {
+			if _, err := os.Stat(filepath.Join(ReportsDir(base, "demo"), gone)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("archive %q still exists, want it removed (stat err = %v)", gone, err)
+			}
+		}
+	})
+
+	t.Run("removes history file and executor.json", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(HistoryFile(base, "demo"), []byte(`{"n":1}`), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		executor := filepath.Join(ResultsDir(base, "demo"), ExecutorFileName)
+		if err := os.WriteFile(executor, []byte(`{"buildOrder":5}`), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := ClearHistory(base, "demo"); err != nil {
+			t.Fatalf("ClearHistory returned unexpected error: %v", err)
+		}
+
+		if _, err := os.Stat(HistoryFile(base, "demo")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("history file still exists (stat err = %v)", err)
+		}
+		if _, err := os.Stat(executor); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("executor.json still exists (stat err = %v)", err)
+		}
+	})
+
+	t.Run("fresh project with nothing to clear succeeds", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := ClearHistory(base, "demo"); err != nil {
+			t.Fatalf("ClearHistory on a fresh project returned unexpected error: %v", err)
+		}
+	})
+
+	t.Run("missing reports directory reports the error", func(t *testing.T) {
+		base := t.TempDir()
+
+		err := ClearHistory(base, "nosuch")
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("ClearHistory error = %v, want it to wrap fs.ErrNotExist", err)
+		}
+	})
+}
+
 // TestHistoryFileStaysOutOfResults guards the one property of the history
 // path that is not a matter of taste. Every build appends to this file, and
 // the watcher rebuilds a project whenever the listing of its results

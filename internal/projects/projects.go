@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 )
 
 var (
@@ -196,4 +197,50 @@ func HistoryFile(baseDir, projectID string) string {
 func NumberedReportDir(baseDir, projectID string, n int) string {
 	path := filepath.Join(ReportsDir(baseDir, projectID), fmt.Sprintf("%d", n))
 	return path
+}
+
+// ClearHistory resets everything that gives a project's report its trend
+// history: every numbered archive under ReportsDir (identified by a name
+// that parses as a number - "latest" and anything else is left alone),
+// the HistoryFile, and the results directory's ExecutorFileName. Deleting
+// the numbered archives also resets the next build's number back to 1,
+// which is why ExecutorFileName has to go too: writeExecutor in the report
+// package is a no-op for build 1, so a stale executor.json from a higher
+// build number would otherwise survive untouched.
+//
+// A missing ReportsDir is returned as-is (wrapping fs.ErrNotExist), the
+// same convention as ClearResults. A missing HistoryFile is not an error -
+// a project with no build yet has none - so that removal alone tolerates
+// fs.ErrNotExist rather than propagating it.
+func ClearHistory(baseDir, projectID string) error {
+	entries, err := os.ReadDir(ReportsDir(baseDir, projectID))
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		_, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue
+		}
+		err = os.RemoveAll(filepath.Join(ReportsDir(baseDir, projectID), entry.Name()))
+		if err != nil {
+			return err
+		}
+	}
+
+	err = os.Remove(HistoryFile(baseDir, projectID))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+
+	err = os.RemoveAll(filepath.Join(ResultsDir(baseDir, projectID), ExecutorFileName))
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

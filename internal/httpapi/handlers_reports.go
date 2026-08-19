@@ -97,3 +97,38 @@ func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, r, resp)
 }
+
+// clearHistory handles POST /projects/{id}/history/clean. Resets the
+// project's trend history - its numbered archives and history.jsonl - and
+// starts a fresh build, so a 202 here means the same thing it means on
+// startGeneration: accepted, not yet finished. Callers learn the outcome by
+// polling the generation endpoint, same as after startGeneration.
+//
+// Responds 400 if id fails projects.ValidateProjectID, 404 if the project
+// has no results directory, 409 if a build for that project is already in
+// flight or its results directory is empty, and 500 for any other failure.
+func (s *Server) clearHistory(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireProjectID(w, r)
+	if !ok {
+		return
+	}
+
+	err := s.reports.ClearHistory(r.Context(), id)
+	switch {
+	case errors.Is(err, report.ErrProjectNotFound):
+		http.Error(w, "project not found", http.StatusNotFound)
+		return
+	case errors.Is(err, report.ErrNoResults):
+		http.Error(w, "project has no results to clear history", http.StatusConflict)
+		return
+	case errors.Is(err, report.ErrAlreadyRunning):
+		http.Error(w, "report generation is already running", http.StatusConflict)
+		return
+	case err != nil:
+		slog.Error("failed to clear history", "err", err, "project_id", id)
+		http.Error(w, "failed to clear history", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+}

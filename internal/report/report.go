@@ -736,3 +736,38 @@ func (g *Generator) ClearResults(projectID string) error {
 
 	return nil
 }
+
+// ClearHistory resets projectID's trend history (see projects.ClearHistory)
+// and then starts a fresh build, under the same per-project lock
+// Generate/Start use. Holding the lock across the Start call is safe rather
+// than a self-deadlock: Start's own synchronous part never touches this
+// lock, only the background goroutine it launches does, by calling
+// Generate - and that goroutine simply waits for ClearHistory to return and
+// release the lock, which happens moments later. Serializing the two this
+// way is also what keeps the triggered build from reading project state
+// mid-cleanup.
+//
+// It returns a validation error for a malformed project ID, wraps
+// ErrProjectNotFound if the project has no results directory, and
+// otherwise returns exactly what Start returns - including
+// ErrAlreadyRunning or ErrNoResults, which callers already know how to
+// map from starting a build directly.
+func (g *Generator) ClearHistory(ctx context.Context, projectID string) error {
+	err := projects.ValidateProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	mu := g.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	err = projects.ClearHistory(g.projectsDir, projectID)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: %s", ErrProjectNotFound, projectID)
+	}
+	if err != nil {
+		return fmt.Errorf("clearing history directory: %w", err)
+	}
+
+	return g.Start(ctx, projectID)
+}

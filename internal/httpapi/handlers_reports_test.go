@@ -18,14 +18,16 @@ import (
 // real one would have to race an actual build to produce "already running" or
 // a failure, so the branches that matter here are unreachable through it.
 type stubGenerator struct {
-	startErr error // returned by Start
-	clearErr error // returned by ClearResults
+	startErr        error // returned by Start
+	clearErr        error // returned by ClearResults
+	clearHistoryErr error // returned by ClearHistory
 
 	status    report.Status // returned by Status
 	hasStatus bool
 
-	startedWith []string // project IDs Start was called with, in order
-	clearedWith []string // project IDs ClearResults was called with, in order
+	startedWith        []string // project IDs Start was called with, in order
+	clearedWith        []string // project IDs ClearResults was called with, in order
+	clearedHistoryWith []string // project IDs ClearHistory was called with, in order
 }
 
 func (g *stubGenerator) Start(_ context.Context, projectID string) error {
@@ -40,6 +42,11 @@ func (g *stubGenerator) Status(string) (report.Status, bool) {
 func (g *stubGenerator) ClearResults(projectID string) error {
 	g.clearedWith = append(g.clearedWith, projectID)
 	return g.clearErr
+}
+
+func (g *stubGenerator) ClearHistory(_ context.Context, projectID string) error {
+	g.clearedHistoryWith = append(g.clearedHistoryWith, projectID)
+	return g.clearHistoryErr
 }
 
 // newStubServer returns a Server whose only working dependency is gen; the
@@ -250,6 +257,115 @@ func TestGenerationStatus(t *testing.T) {
 
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+	})
+}
+
+func TestClearHistory(t *testing.T) {
+	t.Run("accepted with no body", func(t *testing.T) {
+		gen := &stubGenerator{}
+		s := newStubServer(gen)
+
+		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body)
+		}
+		if got := w.Body.String(); got != "" {
+			t.Errorf("body = %q, want empty", got)
+		}
+		if len(gen.clearedHistoryWith) != 1 || gen.clearedHistoryWith[0] != "demo" {
+			t.Errorf("ClearHistory called with %v, want exactly one call for %q", gen.clearedHistoryWith, "demo")
+		}
+	})
+
+	t.Run("error mapping", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			clearErr error
+			want     int
+		}{
+			{"unknown project", fmt.Errorf("%w: demo", report.ErrProjectNotFound), http.StatusNotFound},
+			{"build already running", fmt.Errorf("%w: demo", report.ErrAlreadyRunning), http.StatusConflict},
+			{"nothing to build from", fmt.Errorf("%w: demo", report.ErrNoResults), http.StatusConflict},
+			{"anything else", errors.New("disk on fire"), http.StatusInternalServerError},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				s := newStubServer(&stubGenerator{clearHistoryErr: tt.clearErr})
+
+				w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
+					nil, map[string]string{"id": "demo"})
+
+				if w.Code != tt.want {
+					t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.want, w.Body)
+				}
+			})
+		}
+	})
+
+	t.Run("the two conflicts are told apart in the body", func(t *testing.T) {
+		bodies := make(map[string]string)
+		for _, sentinel := range []error{report.ErrAlreadyRunning, report.ErrNoResults} {
+			s := newStubServer(&stubGenerator{clearHistoryErr: fmt.Errorf("%w: demo", sentinel)})
+
+			w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
+				nil, map[string]string{"id": "demo"})
+
+			bodies[sentinel.Error()] = w.Body.String()
+		}
+
+		running, noResults := bodies[report.ErrAlreadyRunning.Error()], bodies[report.ErrNoResults.Error()]
+		if running == noResults {
+			t.Fatalf("both 409s answer %q; a caller cannot tell a running build from empty results", running)
+		}
+	})
+
+	t.Run("a server error keeps its cause to itself", func(t *testing.T) {
+		s := newStubServer(&stubGenerator{
+			clearHistoryErr: errors.New("clearing history directory: open /app/projects/demo/reports: permission denied"),
+		})
+
+		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body)
+		}
+		if body := w.Body.String(); strings.Contains(body, "/app/projects") {
+			t.Errorf("body = %q, want no internal paths", body)
+		}
+	})
+
+	t.Run("a malformed id never reaches the generator", func(t *testing.T) {
+		gen := &stubGenerator{}
+		s := newStubServer(gen)
+
+		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/BAD_ID/history/clean",
+			nil, map[string]string{"id": "BAD_ID"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+		if len(gen.clearedHistoryWith) != 0 {
+			t.Errorf("ClearHistory was called with %v, want no call at all", gen.clearedHistoryWith)
+		}
+	})
+
+	t.Run("success is not mistaken for a server error", func(t *testing.T) {
+		// A switch that catches the failure branches with "default" instead of
+		// "case err != nil" would fall through here too, since nil satisfies
+		// none of the named cases either. That mistake looks identical to a
+		// 500 on the one input that must never produce one: success.
+		s := newStubServer(&stubGenerator{})
+
+		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body)
 		}
 	})
 }
