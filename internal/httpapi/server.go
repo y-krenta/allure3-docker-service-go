@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
@@ -27,6 +28,12 @@ type reportGenerator interface {
 	// ClearHistory resets projectID's trend history and archived builds,
 	// then starts a fresh build under the same per-project lock.
 	ClearHistory(ctx context.Context, projectID string) error
+
+	// ExportLatest streams projectID's published report into w as a zip
+	// archive, holding the same per-project lock. It takes an io.Writer
+	// rather than the ResponseWriter so the report package stays free of
+	// HTTP, and so a test can export into a buffer.
+	ExportLatest(projectID string, w io.Writer) error
 }
 
 // Server holds the shared dependencies for HTTP handlers: the base directory

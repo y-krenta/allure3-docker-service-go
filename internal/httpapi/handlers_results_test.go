@@ -371,8 +371,9 @@ func TestHandleMaxBytesError(t *testing.T) {
 // on the "not supported" path.
 type deadlineRecorder struct {
 	*httptest.ResponseRecorder
-	deadlines []time.Time
-	err       error // returned instead of recording, when set
+	deadlines      []time.Time
+	writeDeadlines []time.Time
+	err            error // returned instead of recording, when set
 }
 
 func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
@@ -380,6 +381,17 @@ func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
 		return d.err
 	}
 	d.deadlines = append(d.deadlines, t)
+	return nil
+}
+
+// SetWriteDeadline records the deadlines exportReport lifts the response past
+// the server's WriteTimeout with; read and write deadlines are kept apart so a
+// test asserting on one is not satisfied by the other.
+func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
+	if d.err != nil {
+		return d.err
+	}
+	d.writeDeadlines = append(d.writeDeadlines, t)
 	return nil
 }
 

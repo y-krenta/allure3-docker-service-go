@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
@@ -21,13 +25,20 @@ type stubGenerator struct {
 	startErr        error // returned by Start
 	clearErr        error // returned by ClearResults
 	clearHistoryErr error // returned by ClearHistory
+	exportErr       error // returned by ExportLatest
 
 	status    report.Status // returned by Status
 	hasStatus bool
 
+	// exportBody is written into the caller's writer before ExportLatest
+	// returns, so a test can tell "nothing was written" apart from "the
+	// body arrived and then the walk failed".
+	exportBody string
+
 	startedWith        []string // project IDs Start was called with, in order
 	clearedWith        []string // project IDs ClearResults was called with, in order
 	clearedHistoryWith []string // project IDs ClearHistory was called with, in order
+	exportedWith       []string // project IDs ExportLatest was called with, in order
 }
 
 func (g *stubGenerator) Start(_ context.Context, projectID string) error {
@@ -47,6 +58,16 @@ func (g *stubGenerator) ClearResults(projectID string) error {
 func (g *stubGenerator) ClearHistory(_ context.Context, projectID string) error {
 	g.clearedHistoryWith = append(g.clearedHistoryWith, projectID)
 	return g.clearHistoryErr
+}
+
+func (g *stubGenerator) ExportLatest(projectID string, w io.Writer) error {
+	g.exportedWith = append(g.exportedWith, projectID)
+	if g.exportBody != "" {
+		if _, err := io.WriteString(w, g.exportBody); err != nil {
+			return err
+		}
+	}
+	return g.exportErr
 }
 
 // newStubServer returns a Server whose only working dependency is gen; the
@@ -366,6 +387,155 @@ func TestClearHistory(t *testing.T) {
 
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body)
+		}
+	})
+}
+
+// newExportServer returns a Server whose projectsDir is real - exportReport
+// stats the report directory itself before handing off - and whose generator is
+// gen. Every project named in withReport is created with a published report.
+func newExportServer(t *testing.T, gen *stubGenerator, withReport ...string) *Server {
+	t.Helper()
+
+	dir := t.TempDir()
+	for _, id := range withReport {
+		if err := projects.CreateDir(dir, id); err != nil {
+			t.Fatalf("setup project %q: %v", id, err)
+		}
+		latest := projects.LatestReportDir(dir, id)
+		if err := os.MkdirAll(latest, 0o755); err != nil {
+			t.Fatalf("setup report for %q: %v", id, err)
+		}
+		if err := os.WriteFile(filepath.Join(latest, "index.html"), []byte("<html>"), 0o644); err != nil {
+			t.Fatalf("setup report for %q: %v", id, err)
+		}
+	}
+	return NewServer(dir, gen)
+}
+
+func TestExportReport(t *testing.T) {
+	// httptest.ResponseRecorder carries no write deadline, so the handler's
+	// SetWriteDeadline fails on every one of these requests and logs a line.
+	// That is the point of only logging it: a recorder, and a connection whose
+	// deadline cannot be moved, both still get their archive.
+
+	// The stub body deliberately does not start with the "PK\x03\x04" magic of a
+	// real archive. httptest.ResponseRecorder sniffs the body with
+	// http.DetectContentType whenever the handler set no Content-Type of its
+	// own, and zip magic would make the sniffed value identical to the header
+	// under test - the assertion would then pass with the header deleted.
+	t.Run("serves the archive as an attachment", func(t *testing.T) {
+		gen := &stubGenerator{exportBody: "pretend archive bytes"}
+		s := newExportServer(t, gen, "demo")
+
+		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
+		}
+		if got := w.Header().Get("Content-Type"); got != "application/zip" {
+			t.Errorf("Content-Type = %q, want %q", got, "application/zip")
+		}
+		if got := w.Body.String(); got != gen.exportBody {
+			t.Errorf("body = %q, want the archive the generator wrote (%q)", got, gen.exportBody)
+		}
+		if len(gen.exportedWith) != 1 || gen.exportedWith[0] != "demo" {
+			t.Errorf("ExportLatest called with %v, want exactly one call for %q", gen.exportedWith, "demo")
+		}
+	})
+
+	// Without the quotes an id containing a space - which ValidateProjectID
+	// allows - would end the filename token early, and the client would save
+	// the archive under the first word with no extension.
+	t.Run("names the download after the project", func(t *testing.T) {
+		gen := &stubGenerator{exportBody: "archive"}
+		s := newExportServer(t, gen, "my project")
+
+		w := callWithPath(s.exportReport, http.MethodGet, "/projects/my%20project/report/export",
+			nil, map[string]string{"id": "my project"})
+
+		want := `attachment; filename="my project-report.zip"`
+		if got := w.Header().Get("Content-Disposition"); got != want {
+			t.Errorf("Content-Disposition = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a project with no published report answers 404", func(t *testing.T) {
+		gen := &stubGenerator{exportBody: "archive"}
+		s := newExportServer(t, gen) // project dir absent entirely
+
+		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
+		}
+		// Exact, not "contains": a missing return after the 404 would keep the
+		// recorded status at 404 - a recorder holds the first one written - and
+		// only show up as a second message appended to the body.
+		if got := w.Body.String(); got != "report not found\n" {
+			t.Errorf("body = %q, want only the 404 message", got)
+		}
+		if len(gen.exportedWith) != 0 {
+			t.Errorf("ExportLatest was called with %v, want no call at all", gen.exportedWith)
+		}
+	})
+
+	t.Run("an invalid project id answers 400", func(t *testing.T) {
+		gen := &stubGenerator{exportBody: "archive"}
+		s := newExportServer(t, gen)
+
+		w := callWithPath(s.exportReport, http.MethodGet, "/projects/Bad%20Id/report/export",
+			nil, map[string]string{"id": "Bad Id"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+		if len(gen.exportedWith) != 0 {
+			t.Errorf("ExportLatest was called with %v, want no call at all", gen.exportedWith)
+		}
+	})
+
+	// The export is the one response that legitimately outlives the server's
+	// WriteTimeout: it may wait on a running build before it writes a byte, and
+	// then stream a large archive. http.ResponseController is how a single
+	// handler lifts that limit, and nothing else in the response shows whether
+	// it did - a connection cut at fifteen seconds looks like a truncated 200.
+	t.Run("extends the write deadline past the server default", func(t *testing.T) {
+		rec := newDeadlineRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/projects/demo/report/export", nil)
+		r.SetPathValue("id", "demo")
+
+		before := time.Now()
+		newExportServer(t, &stubGenerator{exportBody: "archive"}, "demo").exportReport(rec, r)
+
+		if len(rec.writeDeadlines) != 1 {
+			t.Fatalf("write deadlines set = %v, want exactly one", rec.writeDeadlines)
+		}
+		if got := rec.writeDeadlines[0].Sub(before); got < exportWriteDeadline {
+			t.Errorf("write deadline set %v ahead, want at least %v", got, exportWriteDeadline)
+		}
+	})
+
+	// Documents the deliberate limitation: the status is on the wire before the
+	// walk can fail, so a mid-archive failure reaches the client as a truncated
+	// 200 and lives on only in the log.
+	t.Run("a failure part-way through still reads as 200", func(t *testing.T) {
+		gen := &stubGenerator{
+			exportBody: "half an archive",
+			exportErr:  errors.New("disk went away"),
+		}
+		s := newExportServer(t, gen, "demo")
+
+		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if got := w.Body.String(); got != "half an archive" {
+			t.Errorf("body = %q, want the bytes written before the failure", got)
 		}
 	})
 }

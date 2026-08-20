@@ -2,10 +2,13 @@ package httpapi
 
 import (
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
+	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
@@ -131,4 +134,48 @@ func (s *Server) clearHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// exportReport handles GET /projects/{id}/report/export. It answers with the
+// project's published report as a zip attachment, streamed straight into the
+// response instead of being staged in memory or on disk first.
+//
+// Responds 200 with the archive, 400 if id fails projects.ValidateProjectID,
+// 404 if the project has no published report, and 500 if that check itself
+// fails. The existence check is a fast path to a clear 404, not a guarantee:
+// the report can still be removed before the export takes the project's lock.
+//
+// Once the first byte of the archive is on the wire the status is fixed at
+// 200, so a failure part-way through can only be logged - the client receives
+// a truncated archive.
+func (s *Server) exportReport(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireProjectID(w, r)
+	if !ok {
+		return
+	}
+
+	_, err := os.Stat(projects.LatestReportDir(s.projectsDir, id))
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "report not found", http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		slog.Error("failed to stat report directory", "err", err, "project_id", id)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	base := id + "-report"
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+base+`.zip"`)
+
+	rc := http.NewResponseController(w)
+	err = rc.SetWriteDeadline(time.Now().Add(exportWriteDeadline))
+	if err != nil {
+		slog.Error("failed to set write deadline", "err", err, "project_id", id)
+	}
+	err = s.reports.ExportLatest(id, w)
+	if err != nil {
+		slog.Error("failed to export report", "err", err, "project_id", id)
+	}
 }

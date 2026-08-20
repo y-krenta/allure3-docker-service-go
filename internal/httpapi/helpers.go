@@ -4,15 +4,26 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-// msgInternalError is the body sent with every 500 in this package. It says
-// nothing about the cause deliberately: the causes name filesystem paths and
-// internal state, and belong in the log beside the request ID rather than in
-// a response the client can read.
-const msgInternalError = "internal server error"
+const (
+	// msgInternalError is the body sent with every 500 in this package. It says
+	// nothing about the cause deliberately: the causes name filesystem paths and
+	// internal state, and belong in the log beside the request ID rather than in
+	// a response the client can read.
+	msgInternalError = "internal server error"
+	// exportWriteDeadline is how long the export handler gives itself to
+	// finish writing, replacing the server's WriteTimeout for that one
+	// response through http.ResponseController. It has to cover both the
+	// wait for a running build to release the project's lock - bounded by
+	// the report package's own generate timeout - and the streaming of the
+	// archive afterwards, neither of which fits the seconds-long budget
+	// every other handler shares.
+	exportWriteDeadline = 15 * time.Minute
+)
 
 // requireProjectID reads the {id} path value and validates it, returning the
 // project ID and whether it is usable.
