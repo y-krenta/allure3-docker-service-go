@@ -179,3 +179,46 @@ func (s *Server) exportReport(w http.ResponseWriter, r *http.Request) {
 		slog.Error("failed to export report", "err", err, "project_id", id)
 	}
 }
+
+// latestReport handles GET /projects/{id}/latest-report. It is a bookmarkable
+// entry point to whatever the project has published: instead of serving
+// anything itself it redirects to the report's static tree, which
+// serveProjectReport then hands out.
+//
+// The target is relative - "reports/latest/" - so http.Redirect resolves it
+// against the incoming request path. That keeps the Location correct whatever
+// prefix the service is mounted under, which a hand-built absolute path would
+// not. Both the trailing slash and the absent index.html matter: ServeFileFS
+// canonicalises the URL itself, and either one missing costs the client a
+// second redirect (see the redirect table in docs/02-http-api.md).
+//
+// The code is 302 rather than 301 deliberately. The target's existence depends
+// on the disk - a report can be deleted or a project removed - and a permanent
+// redirect is cached by browsers past any such change, with no way for the
+// service to take it back.
+//
+// Responds 302 with the Location header, 400 if id fails
+// projects.ValidateProjectID, 404 if the project has no published report, and
+// 500 if that check itself fails. Like exportReport, the existence check is a
+// fast path to a clear 404, not a guarantee: the report can be removed between
+// the check and the client following the redirect.
+func (s *Server) latestReport(w http.ResponseWriter, r *http.Request) {
+	id, ok := requireProjectID(w, r)
+	if !ok {
+		return
+	}
+
+	_, err := os.Stat(projects.LatestReportDir(s.projectsDir, id))
+	if errors.Is(err, fs.ErrNotExist) {
+		http.Error(w, "latest report not found", http.StatusNotFound)
+		return
+	}
+
+	if err != nil {
+		slog.Error("failed to stat latest report directory", "err", err, "project_id", id)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "reports/latest/", http.StatusFound)
+}

@@ -539,3 +539,60 @@ func TestExportReport(t *testing.T) {
 		}
 	})
 }
+
+func TestLatestReport(t *testing.T) {
+	// The Location is asserted whole, not by suffix or by "contains". Every
+	// way this handler can be written wrong produces a Location that is still
+	// plausible on sight: the project segment missing (an absolute target),
+	// "report" for "reports", or the trailing slash dropped - and the last one
+	// costs the client a second hop through ServeFileFS's own canonicalising
+	// 301 rather than failing outright.
+	t.Run("redirects to the published report", func(t *testing.T) {
+		s := newExportServer(t, &stubGenerator{}, "demo")
+
+		w := callWithPath(s.latestReport, http.MethodGet, "/projects/demo/latest-report",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusFound, w.Body)
+		}
+		want := "/projects/demo/reports/latest/"
+		if got := w.Header().Get("Location"); got != want {
+			t.Errorf("Location = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a project with no published report answers 404", func(t *testing.T) {
+		s := newExportServer(t, &stubGenerator{}) // project dir absent entirely
+
+		w := callWithPath(s.latestReport, http.MethodGet, "/projects/demo/latest-report",
+			nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
+		}
+		// Exact, not "contains": a missing return after the 404 would leave the
+		// recorded status at 404 - a recorder keeps the first one written - and
+		// show up only as a Location header on a 404 body.
+		if got := w.Body.String(); got != "latest report not found\n" {
+			t.Errorf("body = %q, want only the 404 message", got)
+		}
+		if got := w.Header().Get("Location"); got != "" {
+			t.Errorf("Location = %q, want no redirect header at all", got)
+		}
+	})
+
+	t.Run("an invalid project id answers 400", func(t *testing.T) {
+		s := newExportServer(t, &stubGenerator{})
+
+		w := callWithPath(s.latestReport, http.MethodGet, "/projects/Bad%20Id/latest-report",
+			nil, map[string]string{"id": "Bad Id"})
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+		if got := w.Header().Get("Location"); got != "" {
+			t.Errorf("Location = %q, want no redirect header at all", got)
+		}
+	})
+}

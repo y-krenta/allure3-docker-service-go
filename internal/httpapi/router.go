@@ -23,6 +23,7 @@ func (s *Server) Routes() http.Handler {
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}/reports/{path...}", s.serveProjectReport)
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}/generation", s.generationStatus)
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}/report/export", s.exportReport)
+	r.HandleFunc("GET "+projectsEndpoint+"/{id}/latest-report", s.latestReport)
 
 	r.HandleFunc("POST "+projectsEndpoint, s.createProject)
 	r.HandleFunc("POST "+projectsEndpoint+"/{id}/results", s.sendResults)
