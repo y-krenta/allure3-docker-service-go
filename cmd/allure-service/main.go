@@ -58,9 +58,9 @@ func main() {
 	}()
 
 	s := httpapi.NewServer(cfg.ProjectsDir, reports, httpapi.RuntimeConfig{
-		KeepHistory:              cfg.KeepHistory,
-		KeepHistoryLatest:        cfg.KeepHistoryLatest,
-		CheckResultsEverySeconds: int(cfg.CheckResultsInterval.Seconds()),
+		KeepHistory:       cfg.KeepHistory,
+		KeepHistoryLatest: cfg.KeepHistoryLatest,
+		CheckResultsEvery: cfg.CheckResultsInterval,
 	})
 
 	srv := &http.Server{

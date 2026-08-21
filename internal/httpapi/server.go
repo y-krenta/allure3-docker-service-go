@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
@@ -47,14 +48,13 @@ type reportGenerator interface {
 // stay out too: reporting them would state a behaviour the service does not
 // have. Each belongs here once its code exists.
 //
-// CheckResultsEverySeconds is a plain int, not a time.Duration, on purpose.
-// Duration is an int64 of nanoseconds with no MarshalJSON, so encoding/json
-// would silently publish 30000000000 where the field promises seconds. The
-// conversion happens in main, where the Duration comes from.
+// The type carries no json tags: it is what the server holds, not what the
+// endpoint sends. getConfig converts it to configResponse, which is where the
+// field names and units of the wire format are decided.
 type RuntimeConfig struct {
-	KeepHistory              bool `json:"keep_history"`
-	KeepHistoryLatest        int  `json:"keep_history_latest"`
-	CheckResultsEverySeconds int  `json:"check_results_every_seconds"`
+	KeepHistory       bool
+	KeepHistoryLatest int
+	CheckResultsEvery time.Duration
 }
 
 // Server holds the shared dependencies for HTTP handlers: the base directory

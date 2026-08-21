@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestGetConfig(t *testing.T) {
@@ -20,9 +21,9 @@ func TestGetConfig(t *testing.T) {
 
 	t.Run("reports the settings the server was built with", func(t *testing.T) {
 		s := NewServer("unused-dir", nil, RuntimeConfig{
-			KeepHistory:              true,
-			KeepHistoryLatest:        60,
-			CheckResultsEverySeconds: 30,
+			KeepHistory:       true,
+			KeepHistoryLatest: 60,
+			CheckResultsEvery: 30 * time.Second,
 		})
 
 		w := httptest.NewRecorder()
@@ -53,8 +54,10 @@ func TestGetConfig(t *testing.T) {
 			t.Errorf("keep_history = %v, want true", got["keep_history"])
 		}
 		// JSON numbers decode into float64, so the comparison is against
-		// float64 literals. 30 rather than 3e10 is the point of the
-		// assertion: a time.Duration field would publish nanoseconds.
+		// float64 literals. The interval is the assertion that matters:
+		// the server holds 30 * time.Second, and 30 rather than 3e10 on
+		// the wire is what says the Duration was converted rather than
+		// marshalled as its raw nanosecond count.
 		if got["keep_history_latest"] != float64(60) {
 			t.Errorf("keep_history_latest = %v, want 60", got["keep_history_latest"])
 		}
