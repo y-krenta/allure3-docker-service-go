@@ -61,14 +61,17 @@ type RuntimeConfig struct {
 // under which per-project results/reports are stored, and the generator that
 // the report endpoints drive.
 type Server struct {
-	projectsDir string
-	reports     reportGenerator
-	cfg         RuntimeConfig
+	projectsDir   string
+	reports       reportGenerator
+	cfg           RuntimeConfig
+	allureVersion string
 }
 
 // NewServer builds a Server that resolves project storage under projectsDir,
-// starts report builds through reports, and reports cfg from the config
-// endpoint.
-func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig) *Server {
-	return &Server{projectsDir: projectsDir, reports: reports, cfg: cfg}
+// starts report builds through reports, and answers the meta endpoints with
+// cfg and allureVersion. Both of the last two are read once in main - one from
+// the environment, one from the CLI - and are immutable for the life of the
+// process.
+func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig, allureVersion string) *Server {
+	return &Server{projectsDir: projectsDir, reports: reports, cfg: cfg, allureVersion: allureVersion}
 }

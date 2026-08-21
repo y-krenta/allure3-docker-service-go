@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,7 +26,16 @@ func main() {
 		log.Fatalf("allure CLI not found (ALLURE_BIN=%q): %v", cfg.AllureBin, err)
 	}
 
-	log.Printf("allure %s", resolved)
+	versionCtx, cancelVersion := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelVersion()
+
+	out, err := exec.CommandContext(versionCtx, cfg.AllureBin, "--version").Output()
+	if err != nil {
+		log.Fatalf("allure --version failed: %v", err)
+	}
+	allureVersion := strings.TrimSpace(string(out))
+	log.Printf("allure %s (%s)", resolved, allureVersion)
+
 	pathDefaultLatestReportDir := projects.LatestReportDir(cfg.ProjectsDir, projects.DefaultProjectID)
 	pathDefaultResultDir := projects.ResultsDir(cfg.ProjectsDir, projects.DefaultProjectID)
 
@@ -61,7 +71,7 @@ func main() {
 		KeepHistory:       cfg.KeepHistory,
 		KeepHistoryLatest: cfg.KeepHistoryLatest,
 		CheckResultsEvery: cfg.CheckResultsInterval,
-	})
+	}, allureVersion)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

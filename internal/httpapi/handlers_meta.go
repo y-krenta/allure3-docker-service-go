@@ -14,6 +14,14 @@ type configResponse struct {
 	CheckResultsEverySeconds int  `json:"check_results_every_seconds"`
 }
 
+// versionResponse is the JSON body returned by getVersion. A bare JSON string
+// would be a valid body too, but an object leaves room for the service's own
+// version beside the CLI's, and matches the shape every other endpoint here
+// answers with.
+type versionResponse struct {
+	Version string `json:"version"`
+}
+
 // getConfig handles GET /config. It answers with the settings the service is
 // actually running under, so a client can ask how the service will behave
 // instead of assuming: whether trend history is kept and how deep, and how
@@ -31,6 +39,27 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		KeepHistory:              s.cfg.KeepHistory,
 		KeepHistoryLatest:        s.cfg.KeepHistoryLatest,
 		CheckResultsEverySeconds: int(s.cfg.CheckResultsEvery.Seconds()),
+	}
+	writeJSON(w, r, resp)
+}
+
+// getVersion handles GET /version. It reports the version of the Allure CLI
+// this process builds reports with - asked of the binary itself at startup
+// rather than read from an ALLURE_VERSION file, which describes what the image
+// was built with and can disagree with what is actually installed.
+//
+// The value is read once in main and kept in memory, because it cannot change
+// while the process runs: the binary is resolved at startup and never
+// re-resolved. Shelling out per request would buy nothing and cost about
+// 0.4s of JVM startup each time, which is also a free amplifier for anyone
+// pointing a load generator at this endpoint.
+//
+// Responds 200 with versionResponse as JSON. There is no failure branch: a CLI
+// that could not answer --version stopped the service at startup, so by the
+// time this handler can be reached the string is there.
+func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
+	resp := versionResponse{
+		Version: s.allureVersion,
 	}
 	writeJSON(w, r, resp)
 }
