@@ -8,6 +8,7 @@ import (
 const (
 	projectsEndpoint = "/projects"
 	healthEndpoint   = "/health"
+	configEndpoint   = "/config"
 )
 
 // Routes builds the HTTP handler for the whole service: it registers every
@@ -19,6 +20,7 @@ func (s *Server) Routes() http.Handler {
 
 	r.HandleFunc("GET "+healthEndpoint, s.healthCheck)
 	r.HandleFunc("GET "+projectsEndpoint, s.listProjects)
+	r.HandleFunc("GET "+configEndpoint, s.getConfig)
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}", s.getProject)
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}/reports/{path...}", s.serveProjectReport)
 	r.HandleFunc("GET "+projectsEndpoint+"/{id}/generation", s.generationStatus)

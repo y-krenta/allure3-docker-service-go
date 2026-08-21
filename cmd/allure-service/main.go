@@ -57,7 +57,12 @@ func main() {
 		watcher.Run(watchCtx, cfg.ProjectsDir, cfg.CheckResultsInterval, reports.Start)
 	}()
 
-	s := httpapi.NewServer(cfg.ProjectsDir, reports)
+	s := httpapi.NewServer(cfg.ProjectsDir, reports, httpapi.RuntimeConfig{
+		KeepHistory:              cfg.KeepHistory,
+		KeepHistoryLatest:        cfg.KeepHistoryLatest,
+		CheckResultsEverySeconds: int(cfg.CheckResultsInterval.Seconds()),
+	})
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           s.Routes(),

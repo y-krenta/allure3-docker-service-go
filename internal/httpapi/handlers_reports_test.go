@@ -73,7 +73,7 @@ func (g *stubGenerator) ExportLatest(projectID string, w io.Writer) error {
 // newStubServer returns a Server whose only working dependency is gen; the
 // report endpoints never touch projectsDir.
 func newStubServer(gen *stubGenerator) *Server {
-	return NewServer("unused-dir", gen)
+	return NewServer("unused-dir", gen, RuntimeConfig{})
 }
 
 func TestStartGeneration(t *testing.T) {
@@ -410,7 +410,7 @@ func newExportServer(t *testing.T, gen *stubGenerator, withReport ...string) *Se
 			t.Fatalf("setup report for %q: %v", id, err)
 		}
 	}
-	return NewServer(dir, gen)
+	return NewServer(dir, gen, RuntimeConfig{})
 }
 
 func TestExportReport(t *testing.T) {
