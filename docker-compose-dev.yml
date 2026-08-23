@@ -31,11 +31,3 @@ services:
       - "${ALLURE_DOCKER_SERVICE_API_PORT}:5050"
     volumes:
       - ./.data/allure-docker-service/allure-results:/app/allure-results
-
-  allure-ui:
-    image: "frankescobar/allure-docker-service-ui"
-    environment:
-      ALLURE_DOCKER_PUBLIC_API_URL: "http://localhost:${ALLURE_DOCKER_SERVICE_API_PORT}"
-      ALLURE_DOCKER_PUBLIC_API_URL_PREFIX: ""
-    ports:
-      - "7474:5252"
