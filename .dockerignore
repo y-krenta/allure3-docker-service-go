@@ -1,25 +1,17 @@
-
 .git
 .github
 .idea
 .claude
 .ai
 .local
+.data
 .env
 .DS_Store
 
-
-allure-docker-api
-allure-docker-scripts
-allure-docker-api-usage
 docker
-docker-compose-dev.yml
-tests
-resources
-
+docker-compose.yml
 
 docs
-
 
 main
 allure-service
