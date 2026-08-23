@@ -39,6 +39,49 @@ const (
 	maxStderrBytes = 1024 * 4
 )
 
+// reportURLPluginFileName is what the generated plugin is called on disk. The
+// extension is load-bearing: Node decides between ES modules and CommonJS by
+// the file extension, falling back to the nearest package.json for a plain
+// .js. The plugin is written into a project's temp dir, where no package.json
+// exists, so as .js it would be read as CommonJS and its export default would
+// be a syntax error.
+const reportURLPluginFileName = "report-url.mjs"
+
+// reportURLPluginSource is the plugin that tells the Allure CLI where the
+// report being built will be published. The CLI stamps that address onto this
+// run's entry in the history file, and every later report turns the entry into
+// a link: the bars of the trend chart become clickable, each one opening the
+// run it stands for.
+//
+// The CLI offers no flag and no config key for this. It hands each plugin a
+// context, reads the context back after every hook, and keeps whatever the
+// plugin left in reportUrl - so a plugin is the only way in. start is the hook
+// that runs before the history entry is written; done would be too late.
+//
+// This is a string constant, which means nothing checks it. The Go compiler
+// sees text, gofmt leaves it alone, and no linter opens it. A typo here - the
+// wrong case in reportUrl, a missing brace - produces a build that succeeds
+// with an empty URL in the history. It is covered by a test that runs it under
+// node, which is the only thing standing between this constant and a silent
+// regression.
+const reportURLPluginSource = `export default class ReportUrlPlugin {
+  constructor(options = {}) {
+    this.options = options;
+  }
+
+  start = async (context) => {
+    context.reportUrl = this.options.url;
+  };
+}
+`
+
+// awesomeGroupBy is the label hierarchy the report's suite tree is built from.
+// It is passed explicitly because the awesome plugin's own default is no
+// grouping at all: the awesome subcommand used to supply these three labels
+// itself, and generate does not. Drop them and every test lands in one flat
+// list.
+var awesomeGroupBy = []string{"parentSuite", "suite", "subSuite"}
+
 // State is where a project's report generation currently stands. The values
 // are part of the HTTP API and travel to clients unchanged, so renaming one is
 // a breaking change.
@@ -292,11 +335,6 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	}
 	defer func() { _ = os.RemoveAll(outDir) }()
 
-	path, err := writeAllureConfig(tmp, g.historyLimit)
-	if err != nil {
-		return err
-	}
-
 	buildNumber, err := g.getNextBuildNumber(projectID)
 	if err != nil {
 		return err
@@ -314,7 +352,12 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 		return fmt.Errorf("copying history: %w", err)
 	}
 
-	err = g.runAllure(ctx, pathResultDir, outDir, copyHistory, path)
+	path, err := writeAllureConfig(tmp, g.historyLimit, copyHistory, buildNumber)
+	if err != nil {
+		return err
+	}
+
+	err = g.runAllure(ctx, pathResultDir, outDir, path)
 	if err != nil {
 		return fmt.Errorf("running allure: %w", err)
 	}
@@ -383,8 +426,21 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 // in either path is interpreted; ctx bounds the run and kills the process if
 // it expires.
 //
-// historyPath is the file the CLI reads the project's past runs from and
-// appends this one to, which is what gives the report its trends. It is an
+// The subcommand is generate rather than awesome, and the two are not
+// interchangeable even though both build the same report. The awesome
+// subcommand assigns its own single-plugin list over whatever the config
+// named, so under it the report-url plugin never runs and the trend chart's
+// bars lose their links - silently, with a report that generates and looks
+// right. Only generate honours the configured plugins.
+//
+// Everything the command line cannot carry travels in the config file passed
+// with --config: the history file, the retention limit and the plugins.
+// generate has no --history-path of its own, and no subcommand has a flag for
+// plugins at all. See writeAllureConfig for how the file is built and why its
+// name matters.
+//
+// The history file named in that config is what gives the report its trends:
+// the CLI reads the project's past runs from it and appends this one. It is an
 // input and an output at once, and the CLI mutates it in place: same inode,
 // growing by one line per run, with no staging and no rename of its own. A run
 // killed mid-write therefore leaves a half-written line behind, and the CLI
@@ -392,13 +448,6 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 //
 // It must be a copy staged for this build, not the project's real history.
 // Callers own the copying and the publishing; see Generate.
-//
-// The config file passed with --config exists for one setting: how many past
-// runs the CLI keeps in that history file. The awesome subcommand has no
-// --history-limit flag - only generate and history do - so the limit can only
-// reach it through a config, and the CLI trims the file itself while appending
-// this run. See writeAllureConfig for how the file is built and why its name
-// matters.
 //
 // The CLI runs from a neutral working directory rather than inheriting this
 // process's. It stamps every report with a "ci" block that it fills by shelling
@@ -414,14 +463,13 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 // a failed build reports nothing but an exit status. A missing executable is
 // reported as an error wrapping exec.ErrNotFound, which is a deployment
 // problem rather than a problem with the results.
-func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, historyPath, configPath string) error {
+func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, configPath string) error {
 	cmd := exec.CommandContext(
 		ctx,
 		g.allureBin,
-		"awesome",
+		"generate",
 		resultsDir,
 		"--output", outDir,
-		"--history-path", historyPath,
 		"--config", configPath,
 	)
 	cmd.Dir = os.TempDir()
@@ -528,19 +576,72 @@ func stageHistory(src, dst string) error {
 	return os.WriteFile(dst, data, 0o644)
 }
 
-// allureConfig is the slice of the Allure CLI's config file this service sets.
-// Everything omitted keeps the CLI's own default, so the file is deliberately
-// tiny: it exists for one setting the awesome subcommand has no flag for.
+// awesomeOptions is the slice of the awesome plugin's options this service
+// sets. The plugin builds the report itself, so everything visible in a
+// browser is its doing; only the grouping is spelled out here, because its
+// default differs from what the awesome subcommand used to pass.
+type awesomeOptions struct {
+	GroupBy []string `json:"groupBy"`
+}
+
+// reportURLOptions is what the report-url plugin is constructed with. The
+// plugin reads this.options.url and nothing else, so the key here and the
+// property there are one contract split across two languages, with no
+// compiler on either side of the seam.
+type reportURLOptions struct {
+	URL string `json:"url"`
+}
+
+// awesomePlugin is the awesome plugin's entry in the config. It carries no
+// import: the CLI resolves a plugin named awesome to @allurereport/plugin-
+// awesome, which ships with the CLI itself.
+type awesomePlugin struct {
+	Options awesomeOptions `json:"options"`
+}
+
+// reportURLPlugin is the report-url plugin's entry in the config. Unlike the
+// awesome plugin it is not published anywhere, so it needs an import: the CLI
+// first tries the key as a package name under @allurereport/plugin-, and only
+// when that is not installed does it import the path as given.
+type reportURLPlugin struct {
+	Import  string           `json:"import"`
+	Options reportURLOptions `json:"options"`
+}
+
+// allurePlugins is the config's plugins object. Its keys are plugin ids, which
+// makes it a map in Allure's own schema; here it is a struct, because this
+// service always writes exactly these two plugins and a struct turns a
+// misspelled id into a compile error rather than a plugin that never runs.
 //
-// The key is spelled the way Allure spells it and nothing in Go checks that.
-// Rename the field without fixing the tag and encoding/json writes a key the
-// CLI does not know, which it ignores in silence - no warning, no exit code -
-// leaving history to grow without a bound.
+// The ids are spelled with no punctuation for a reason: an id also names the
+// subdirectory a plugin's files are written to, so a slash or a backslash in
+// one is rejected outright on Windows and lands somewhere unexpected here.
+type allurePlugins struct {
+	Awesome   awesomePlugin   `json:"awesome"`
+	ReportURL reportURLPlugin `json:"reporturl"`
+}
+
+// allureConfig is the slice of the Allure CLI's config file this service sets.
+// Everything omitted keeps the CLI's own default, so the file stays small: it
+// carries what the command line has no flag for and nothing else.
+//
+// Every key is spelled the way Allure spells it and nothing in Go checks that.
+// Rename a field without fixing its tag and encoding/json writes a key the CLI
+// does not know, which it ignores in silence - no warning, no exit code - and
+// the setting simply stops taking effect.
 type allureConfig struct {
 	// HistoryLimit is how many past runs the CLI keeps in the history file.
 	// Zero is not "no limit": the CLI reads a missing key as "keep
 	// everything" and a zero as "truncate the history to nothing".
 	HistoryLimit int `json:"historyLimit"`
+	// HistoryPath is the file the CLI reads past runs from and appends this
+	// one to. It must be the copy staged for this build rather than the
+	// project's published history; see runAllure for why.
+	HistoryPath string `json:"historyPath"`
+	// Plugins is what actually produces the report. An empty object here
+	// does not mean "the defaults": the CLI takes the config at its word and
+	// builds nothing at all.
+	Plugins allurePlugins `json:"plugins"`
 }
 
 // writeAllureConfig writes the config for a single Allure run into dir and
@@ -551,12 +652,35 @@ type allureConfig struct {
 // loads a config and skips anything it does not recognise without a word, so a
 // typo here does not fail a build - it quietly turns retention off.
 //
-// The file carries the retention limit and nothing else. The limit belongs on
-// the command line in spirit, but only the generate and history subcommands
-// take --history-limit; awesome, which is what builds the report, reads it from
-// a config file or not at all.
-func writeAllureConfig(dir string, limit int) (string, error) {
-	data, err := json.Marshal(allureConfig{HistoryLimit: limit})
+// The file carries what the command line cannot: the retention limit, the
+// history file and the plugins. buildNumber is the number the report being
+// built will be archived under, and it reaches the browser as the address the
+// trend chart links this run to - see reportURLFor.
+//
+// The report-url plugin is written to disk here, next to the config, rather
+// than shipped in the image. That keeps one path out of the Dockerfile, leaves
+// no case where the file is missing, and makes a build outside a container
+// behave exactly like one inside it. The plugin costs a file write per build,
+// which is nothing next to the build itself.
+func writeAllureConfig(dir string, limit int, historyPath string, buildNumber int) (string, error) {
+	pluginPath, err := writeReportURLPlugin(dir)
+	if err != nil {
+		return "", err
+	}
+	config := allureConfig{
+		HistoryLimit: limit,
+		HistoryPath:  historyPath,
+		Plugins: allurePlugins{
+			Awesome: awesomePlugin{
+				Options: awesomeOptions{GroupBy: awesomeGroupBy},
+			},
+			ReportURL: reportURLPlugin{
+				Import:  pluginPath,
+				Options: reportURLOptions{URL: reportURLFor(buildNumber)},
+			},
+		},
+	}
+	data, err := json.Marshal(config)
 	if err != nil {
 		return "", fmt.Errorf("marshaling allure config: %w", err)
 	}
@@ -600,6 +724,15 @@ func (g *Generator) getNextBuildNumber(projectID string) (int, error) {
 	return maxNumber + 1, nil
 }
 
+// reportURLFor is the address of build number's published report, relative to
+// any other report in the same project: reports live side by side under
+// reports/, so ../7/index.html resolves from reports/latest and from any
+// archived reports/N alike. Both the executor file and the history entry are
+// stamped with it and must agree.
+func reportURLFor(buildNumber int) string {
+	return fmt.Sprintf("../%d/index.html", buildNumber)
+}
+
 // executorFile is the slice of Allure's executor.json this service sets. All
 // eight keys are recognized by the CLI, but only the ones filled in here are
 // meaningful without CI integration; the rest are left as their zero value
@@ -639,7 +772,7 @@ func writeExecutor(resultsDir, projectID string, buildOrder int) error {
 		BuildOrder: buildOrder,
 		BuildName:  fmt.Sprintf("%s #%d", projectID, buildOrder),
 		ReportName: fmt.Sprintf("%s #%d", projectID, buildOrder),
-		ReportURL:  fmt.Sprintf("../%d/index.html", buildOrder),
+		ReportURL:  reportURLFor(buildOrder),
 	}
 
 	data, err := json.Marshal(resp)
@@ -653,6 +786,25 @@ func writeExecutor(resultsDir, projectID string, buildOrder int) error {
 	}
 
 	return nil
+}
+
+// writeReportURLPlugin writes the report-url plugin into dir and returns the
+// path the config should import it by. dir must exist; the file is scratch,
+// like the config beside it, and the next build of the same project clears it.
+//
+// The path returned is absolute, which is what the CLI needs: it imports a
+// plugin by the path it was given, and a relative one would be resolved
+// against the directory the CLI happens to run in - the temp dir, in this
+// service, deliberately unrelated to anything.
+func writeReportURLPlugin(dir string) (string, error) {
+	path := filepath.Join(dir, reportURLPluginFileName)
+
+	err := os.WriteFile(path, []byte(reportURLPluginSource), 0o644)
+	if err != nil {
+		return "", fmt.Errorf("writing report url plugin: %w", err)
+	}
+
+	return path, nil
 }
 
 func (g *Generator) pruneReports(projectID string) error {

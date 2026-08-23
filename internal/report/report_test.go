@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,23 +20,43 @@ import (
 // Shell bodies for the stand-in Allure CLI used by the tests. They are called
 // the way runAllure calls the real thing:
 //
-//	awesome <resultsDir> --output <outDir> --history-path <historyPath> --config <configPath>
+//	generate <resultsDir> --output <outDir> --config <configPath>
 //
-// so $4 is the output directory and $6 the history file. Keep those positions
-// in mind when changing the command line: move --output and these bodies write
-// the report somewhere else entirely, and every test that reads it fails at
-// once.
+// so $4 is the output directory. Keep that position in mind when changing the
+// command line: move --output and these bodies write the report somewhere else
+// entirely, and every test that reads it fails at once.
+//
+// The history file is not on the command line at all - generate has no
+// --history-path - so a body that needs it reads it out of the config, the way
+// the real CLI does. That is what cliFindHistory is for.
 const (
 	// cliOK mimics a successful build by writing a recognizable report.
 	cliOK = "#!/bin/sh\nprintf 'fresh' > \"$4/index.html\"\n"
 	// cliFail mimics Allure rejecting the results.
 	cliFail = "#!/bin/sh\necho 'boom: broken results' >&2\nexit 3\n"
+	// cliFindHistory is the prologue shared by the bodies that touch the
+	// history file. It leaves the output directory in $out and the history
+	// file named by the config in $hist.
+	//
+	// $4 is captured before the loop because walking argv with shift destroys
+	// the positional parameters. Argv is walked rather than indexed so the
+	// assertion survives a reordering of the flags, and the path is dug out of
+	// the config with sed because a shell has no JSON parser - which is fine
+	// here, since encoding/json writes the file without spaces or escapes.
+	cliFindHistory = "#!/bin/sh\n" +
+		"out=\"$4\"\n" +
+		"cfg=\"\"\n" +
+		"while [ $# -gt 0 ]; do\n" +
+		"  if [ \"$1\" = \"--config\" ]; then cfg=\"$2\"; fi\n" +
+		"  shift\n" +
+		"done\n" +
+		"hist=$(sed -n 's/.*\"historyPath\":\"\\([^\"]*\\)\".*/\\1/p' \"$cfg\")\n"
 	// cliHistory succeeds and appends one line to the history file it was
-	// given, the way the real CLI records a run. $6 is that file.
-	cliHistory = "#!/bin/sh\nprintf 'fresh' > \"$4/index.html\"\necho run >> \"$6\"\n"
-	// cliWreckHistory scribbles over the history file it was given and then
-	// fails, standing in for a build killed mid-write.
-	cliWreckHistory = "#!/bin/sh\nprintf 'half a lin' >> \"$6\"\necho 'boom' >&2\nexit 3\n"
+	// pointed at, the way the real CLI records a run.
+	cliHistory = cliFindHistory + "printf 'fresh' > \"$out/index.html\"\necho run >> \"$hist\"\n"
+	// cliWreckHistory scribbles over the history file it was pointed at and
+	// then fails, standing in for a build killed mid-write.
+	cliWreckHistory = cliFindHistory + "printf 'half a lin' >> \"$hist\"\necho 'boom' >&2\nexit 3\n"
 	// cliSlow succeeds, but takes long enough that a test can observe the
 	// build while it is still running.
 	cliSlow = "#!/bin/sh\nsleep 0.5\nprintf 'fresh' > \"$4/index.html\"\n"
@@ -94,6 +116,19 @@ func fakeCLI(t *testing.T, body string) string {
 		t.Fatalf("writing fake CLI: %v", err)
 	}
 	return path
+}
+
+// readFile reads path or fails the test, for the many assertions that only
+// care about a file's content and have nothing useful to say about a read
+// error beyond reporting it.
+func readFile(t *testing.T, path string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return data
 }
 
 // testHistoryLimit is the history limit every generator built by
@@ -380,19 +415,22 @@ func TestRunAllureReportsMissingBinary(t *testing.T) {
 	g := newTestGenerator(t, "definitely-not-an-installed-binary", "demo")
 
 	err := g.runAllure(t.Context(), t.TempDir(), t.TempDir(),
-		filepath.Join(t.TempDir(), "history.jsonl"),
 		filepath.Join(t.TempDir(), "allurerc.json"))
 	if !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("runAllure = %v, want an error wrapping exec.ErrNotFound", err)
 	}
 }
 
-// TestGenerateInvokesAwesomeWithHistoryPath pins the command line down to the
-// two parts of it the report's trends depend on: the awesome subcommand, which
-// is the only one that knows about history at all, and the history file the
-// project accumulates its past runs in. Everything else about the build can
-// change without the test noticing; these two cannot.
-func TestGenerateInvokesAwesomeWithHistoryPath(t *testing.T) {
+// TestGenerateInvokesTheGenerateSubcommand pins the subcommand, which is not
+// interchangeable with awesome even though both build the same report.
+//
+// The awesome subcommand throws the configured plugins away - it assigns its
+// own single-plugin list over whatever the config named - so under awesome the
+// report-url plugin never runs, history entries carry no URL and the trend
+// chart's bars stop being clickable. Nothing fails: the build succeeds, the
+// report looks right, and the regression is only visible by clicking a bar in
+// a browser. Only generate honours the config.
+func TestGenerateInvokesTheGenerateSubcommand(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "argv")
 	g := newTestGenerator(t, fakeCLI(t, cliRecordArgv(dump)), "demo")
 
@@ -406,19 +444,42 @@ func TestGenerateInvokesAwesomeWithHistoryPath(t *testing.T) {
 	}
 	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
 
-	if argv[0] != "awesome" {
-		t.Errorf("argv = %q, want it to start with the awesome subcommand", argv)
+	if argv[0] != "generate" {
+		t.Errorf("argv = %q, want it to start with the generate subcommand - awesome discards the configured plugins", argv)
+	}
+}
+
+// TestGenerateStagesHistoryIntoTheConfig follows the history file the report's
+// trends depend on. It reaches the CLI through the config rather than a flag,
+// and two things about the path are load-bearing.
+//
+// It must be the staged copy, not the project's own history: the published
+// file is replaced only after the report has been moved into place, so a build
+// that dies halfway leaves the real history untouched. And it must sit under
+// the project's temp root, which the next build wipes.
+func TestGenerateStagesHistoryIntoTheConfig(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "config")
+	g := newTestGenerator(t, fakeCLI(t, cliDumpConfig(dump)), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
 	}
 
-	got, ok := flagValue(argv, "--history-path")
-	if !ok {
-		t.Fatalf("argv = %q, want it to carry --history-path", argv)
+	var got struct {
+		HistoryPath string `json:"historyPath"`
 	}
-	if published := projects.HistoryFile(g.projectsDir, "demo"); got == published {
-		t.Errorf("--history-path = %q, want a staged copy rather than the project's own history", got)
+	if err := json.Unmarshal(readFile(t, dump), &got); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
 	}
-	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
-		t.Errorf("--history-path = %q, want it staged under %q", got, tmp)
+
+	if got.HistoryPath == "" {
+		t.Fatal("config carries no historyPath, so the CLI keeps no history at all")
+	}
+	if published := projects.HistoryFile(g.projectsDir, "demo"); got.HistoryPath == published {
+		t.Errorf("historyPath = %q, want a staged copy rather than the project's own history", got.HistoryPath)
+	}
+	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got.HistoryPath, tmp+string(filepath.Separator)) {
+		t.Errorf("historyPath = %q, want it staged under %q", got.HistoryPath, tmp)
 	}
 }
 
@@ -484,10 +545,9 @@ func TestRunAllureKeepsTheTailOfAFloodedStderr(t *testing.T) {
 	}
 }
 
-// TestGenerateInvokesAwesomeWithConfigPath covers the flag that carries the
-// retention setting. The awesome subcommand has no --history-limit of its own -
-// only generate does - so the limit reaches the CLI through a config file, and
-// three things about that file's path are load-bearing.
+// TestGenerateInvokesTheCLIWithConfigPath covers the flag that carries
+// everything the command line cannot: the retention limit, the history file
+// and the plugins. Three things about that file's path are load-bearing.
 //
 // Its extension must be .json: the CLI dispatches on the extension when it
 // loads a config, and anything it does not recognise is skipped in silence,
@@ -495,7 +555,7 @@ func TestRunAllureKeepsTheTailOfAFloodedStderr(t *testing.T) {
 // project's temp root, which is wiped at the start of every build - written
 // anywhere else it either leaks forever or, in the projects root, shows up in
 // listings as a project of its own. And the flag has to be there at all.
-func TestGenerateInvokesAwesomeWithConfigPath(t *testing.T) {
+func TestGenerateInvokesTheCLIWithConfigPath(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "argv")
 	g := newTestGenerator(t, fakeCLI(t, cliRecordArgv(dump)), "demo")
 
@@ -562,17 +622,173 @@ func TestGenerateWritesTheLimitIntoTheConfig(t *testing.T) {
 // zero is exactly what main passes when KEEP_HISTORY is off. An omitempty on
 // the field would turn switching history off into switching it on.
 func TestWriteAllureConfigKeepsAZeroLimit(t *testing.T) {
-	path, err := writeAllureConfig(t.TempDir(), 0)
+	dir := t.TempDir()
+
+	path, err := writeAllureConfig(dir, 0, filepath.Join(dir, "history.jsonl"), 1)
 	if err != nil {
 		t.Fatalf("writeAllureConfig = %v, want nil", err)
 	}
 
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading written config: %v", err)
+	raw := readFile(t, path)
+
+	// Decoded into a map rather than back into allureConfig: a round trip
+	// through the producing type agrees with itself no matter what the tags
+	// say, and an omitempty would show up as a missing key here and as a
+	// well-behaved zero there.
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("config %s is not valid JSON: %v", raw, err)
 	}
-	if got, want := string(raw), `{"historyLimit":0}`; got != want {
-		t.Errorf("config = %s, want %s", got, want)
+
+	limit, ok := got["historyLimit"]
+	if !ok {
+		t.Fatalf("config = %s, want a historyLimit key even when it is zero", raw)
+	}
+	if limit != float64(0) {
+		t.Errorf("historyLimit = %v, want 0", limit)
+	}
+}
+
+// TestWriteAllureConfigWiresTheReportURLPlugin covers the config half of what
+// makes a trend bar clickable. The plugin's only job is to hand the CLI the
+// address of the report being built; the CLI stamps that address onto this
+// run's history entry, and the next report turns it into a link.
+//
+// Every part asserted here fails silently in production. An unresolvable
+// import, a misspelled option key, a URL pointing at the wrong build: the
+// report still generates, exit code 0, and the only symptom is a bar that
+// does nothing when clicked.
+func TestWriteAllureConfigWiresTheReportURLPlugin(t *testing.T) {
+	dir := t.TempDir()
+
+	path, err := writeAllureConfig(dir, testHistoryLimit, filepath.Join(dir, "history.jsonl"), 4)
+	if err != nil {
+		t.Fatalf("writeAllureConfig = %v, want nil", err)
+	}
+
+	raw := readFile(t, path)
+
+	var got struct {
+		Plugins struct {
+			Awesome struct {
+				Options struct {
+					GroupBy []string `json:"groupBy"`
+				} `json:"options"`
+			} `json:"awesome"`
+			ReportURL struct {
+				Import  string `json:"import"`
+				Options struct {
+					URL string `json:"url"`
+				} `json:"options"`
+			} `json:"reporturl"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("config %s is not valid JSON: %v", raw, err)
+	}
+
+	plugin := got.Plugins.ReportURL
+
+	// The literal, not reportURLFor: this is the value the browser follows,
+	// and a test that computes it the same way the code does would follow the
+	// code anywhere it went.
+	if plugin.Options.URL != "../4/index.html" {
+		t.Errorf("plugin url = %q, want ../4/index.html for build 4", plugin.Options.URL)
+	}
+	if plugin.Import == "" {
+		t.Fatalf("config = %s, want the plugin's import path", raw)
+	}
+	// The CLI resolves a plugin by importing the path as given, so it has to
+	// exist by the time the CLI runs - and it has to end in .mjs, or Node
+	// reads it as CommonJS and the ES module inside is a syntax error.
+	if filepath.Ext(plugin.Import) != ".mjs" {
+		t.Errorf("plugin import = %q, want a .mjs file - Node reads .js next to no package.json as CommonJS", plugin.Import)
+	}
+	if _, err := os.Stat(plugin.Import); err != nil {
+		t.Errorf("plugin import %q does not exist: %v", plugin.Import, err)
+	}
+
+	// Without an explicit groupBy the awesome plugin defaults to no grouping
+	// at all - the generate subcommand does not supply the three labels the
+	// awesome subcommand used to pass on its own - and the suite tree
+	// collapses into a flat list of tests.
+	want := []string{"parentSuite", "suite", "subSuite"}
+	if !slices.Equal(got.Plugins.Awesome.Options.GroupBy, want) {
+		t.Errorf("awesome groupBy = %q, want %q", got.Plugins.Awesome.Options.GroupBy, want)
+	}
+}
+
+// TestReportURLPluginSetsTheReportURL runs the plugin the service ships. Its
+// source is a string constant, so nothing in the Go toolchain looks at it: a
+// typo anywhere inside - reportURL for reportUrl, a missing await, a stray
+// character - is caught by no compiler and no linter, and shows up only as a
+// history entry with an empty URL.
+//
+// The harness stands in for the CLI: construct the plugin with options, call
+// start with a bare context, print what it left on the context.
+func TestReportURLPluginSetsTheReportURL(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed, cannot execute the plugin")
+	}
+
+	dir := t.TempDir()
+
+	pluginPath, err := writeReportURLPlugin(dir)
+	if err != nil {
+		t.Fatalf("writeReportURLPlugin = %v, want nil", err)
+	}
+
+	harness := filepath.Join(dir, "harness.mjs")
+	body := "import Plugin from " + strconv.Quote(pluginPath) + ";\n" +
+		"const plugin = new Plugin({ url: \"../7/index.html\" });\n" +
+		"const context = {};\n" +
+		"await plugin.start(context);\n" +
+		"console.log(context.reportUrl);\n"
+	if err := os.WriteFile(harness, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing harness: %v", err)
+	}
+
+	out, err := exec.CommandContext(t.Context(), node, harness).CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the plugin: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "../7/index.html" {
+		t.Errorf("context.reportUrl = %q, want the url the plugin was given", got)
+	}
+}
+
+// TestGenerateWritesThePluginBesideTheConfig checks where the plugin file
+// lands. It is written per build into the project's temp root rather than
+// shipped in the image: there is no path to keep in step between the
+// Dockerfile and the Go code, no case where the file is missing, and a build
+// run outside a container behaves exactly like one inside it. The price is
+// that the file has to be there every time, which is what this pins.
+func TestGenerateWritesThePluginBesideTheConfig(t *testing.T) {
+	dump := filepath.Join(t.TempDir(), "config")
+	g := newTestGenerator(t, fakeCLI(t, cliDumpConfig(dump)), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	var got struct {
+		Plugins struct {
+			ReportURL struct {
+				Import string `json:"import"`
+			} `json:"reporturl"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(readFile(t, dump), &got); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+
+	imported := got.Plugins.ReportURL.Import
+	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(imported, tmp+string(filepath.Separator)) {
+		t.Errorf("plugin import = %q, want it written under %q", imported, tmp)
+	}
+	if _, err := os.Stat(imported); err != nil {
+		t.Errorf("plugin import %q does not exist while the CLI is running: %v", imported, err)
 	}
 }
 
