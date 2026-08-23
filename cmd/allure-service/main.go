@@ -20,6 +20,9 @@ import (
 
 func main() {
 	cfg := config.Load()
+	if cfg.SecurityEnable {
+		log.Fatal("SECURITY_ENABLED is not supported")
+	}
 	resolved, err := exec.LookPath(cfg.AllureBin)
 	if err != nil {
 		log.Fatalf("allure CLI not found (ALLURE_BIN=%q): %v", cfg.AllureBin, err)
