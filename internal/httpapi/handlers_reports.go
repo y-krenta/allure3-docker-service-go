@@ -190,7 +190,7 @@ func (s *Server) exportReport(w http.ResponseWriter, r *http.Request) {
 // prefix the service is mounted under, which a hand-built absolute path would
 // not. Both the trailing slash and the absent index.html matter: ServeFileFS
 // canonicalises the URL itself, and either one missing costs the client a
-// second redirect (see the redirect table in docs/02-http-api.md).
+// second redirect.
 //
 // The code is 302 rather than 301 deliberately. The target's existence depends
 // on the disk - a report can be deleted or a project removed - and a permanent

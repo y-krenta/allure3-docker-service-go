@@ -13,9 +13,9 @@ const (
 )
 
 // Routes builds the HTTP handler for the whole service: it registers every
-// route (see docs/10-api-usage.md for request/response examples) and wraps
-// the mux with the recoverer, requestID and logger middleware, in that
-// outer-to-inner order.
+// route (see the HTTP API section of README.md for request/response examples)
+// and wraps the mux with the recoverer, requestID and logger middleware, in
+// that outer-to-inner order.
 func (s *Server) Routes() http.Handler {
 	r := http.NewServeMux()
 
