@@ -66,6 +66,11 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	err = rc.SetWriteDeadline(time.Now().Add(uploadWriteDeadline))
+	if err != nil {
+		slog.Error("failed to set write deadline", "err", err)
+	}
+
 	ct := r.Header.Get("Content-Type")
 	mediaType, _, err := mime.ParseMediaType(ct)
 	if err != nil || mediaType != "multipart/form-data" {
@@ -127,6 +132,10 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		}
 
 		n, err := savePart(root, name, part)
+		if errors.Is(err, fs.ErrNotExist) {
+			http.Error(w, "project not found", http.StatusNotFound)
+			return
+		}
 		if err != nil {
 			if handleMaxBytesError(w, err) {
 				return
@@ -172,10 +181,36 @@ func handleMaxBytesError(w http.ResponseWriter, err error) bool {
 	return false
 }
 
-// savePart creates or truncates a file under root and copies all data from src
-// into it. On any error it removes the partially written file.
+// savePart streams src into a file called name under root and reports how many
+// bytes arrived. On any error it removes what it had written and the file never
+// appears under name at all.
+//
+// The data goes to a scratch name first and is renamed into place only once all
+// of it is there. Copying straight into name would publish the file the moment
+// it was created and fill it in afterwards, leaving a window in which anything
+// reading the results directory - the Allure CLI during a build, the watcher
+// fingerprinting it - could pick up a half-written result and take it for a
+// malformed one. A rename within one directory is atomic: a reader sees the
+// whole file or no file, never part of it.
+//
+// The scratch name is name with a suffix, so it is as guessable as name itself
+// and needs the same protection. It gets it: both go through root, which
+// refuses either one if it resolves outside - see the tests, which plant a
+// symlink under each name in turn.
+//
+// A symlink already sitting at name is replaced rather than followed, because
+// rename acts on the link itself and not on what it points at. That differs
+// from copying into name directly, which os.Root refuses outright, but only in
+// what the call answers: either way nothing is written outside root, and here
+// the link is left neutralised instead of still aimed out of it.
+//
+// A missing directory surfaces as an error wrapping fs.ErrNotExist, which is
+// what a project deleted mid-upload looks like from in here: root stays open on
+// a directory no longer attached to anything, and creating in it fails.
 func savePart(root *os.Root, name string, src io.Reader) (int64, error) {
-	f, err := root.Create(name)
+	tmp := name + ".part"
+
+	f, err := root.Create(tmp)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create file: %w", err)
 	}
@@ -188,8 +223,8 @@ func savePart(root *os.Root, name string, src io.Reader) (int64, error) {
 
 		_ = f.Close()
 
-		if err := root.Remove(name); err != nil {
-			slog.Error("failed to remove partially written file", "err", err, "file", name)
+		if err := root.Remove(tmp); err != nil {
+			slog.Error("failed to remove partially written file", "err", err, "file", tmp)
 		}
 	}()
 
@@ -197,9 +232,11 @@ func savePart(root *os.Root, name string, src io.Reader) (int64, error) {
 	if err != nil {
 		return n, fmt.Errorf("failed to copy data into file: %w", err)
 	}
-
 	if err := f.Close(); err != nil {
 		return n, fmt.Errorf("failed to close file: %w", err)
+	}
+	if err := root.Rename(tmp, name); err != nil {
+		return n, fmt.Errorf("failed to publish file: %w", err)
 	}
 
 	ok = true

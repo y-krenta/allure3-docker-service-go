@@ -23,6 +23,18 @@ const (
 	// archive afterwards, neither of which fits the seconds-long budget
 	// every other handler shares.
 	exportWriteDeadline = 15 * time.Minute
+
+	// uploadWriteDeadline is how long the upload handler gives itself to
+	// finish, replacing the server's WriteTimeout for that one response
+	// through http.ResponseController. The handler is built for uploads that
+	// run for minutes - a gigabyte cap, and an idle timeout between reads
+	// rather than one over the whole request - and the server's WriteTimeout
+	// is counted from the moment the request headers are read, so it covers
+	// the upload as well as the reply. Without this the files of a long
+	// upload all land on disk and the response saying so cannot be written:
+	// the client sees a broken connection and calls a successful upload
+	// failed.
+	uploadWriteDeadline = 15 * time.Minute
 )
 
 // requireProjectID reads the {id} path value and validates it, returning the

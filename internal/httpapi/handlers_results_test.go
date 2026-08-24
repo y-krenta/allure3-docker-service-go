@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,9 +310,81 @@ func TestSavePart(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "x.json")); !os.IsNotExist(err) {
 			t.Errorf("partially written file was kept (stat err = %v)", err)
 		}
+		// The scratch file has to go too. A failed upload that leaves its
+		// temporary behind would have every retry accumulate one more, and
+		// they all count towards the directory looking non-empty.
+		if _, err := os.Stat(filepath.Join(dir, "x.json.part")); !os.IsNotExist(err) {
+			t.Errorf("temporary file was kept (stat err = %v)", err)
+		}
 	})
 
-	t.Run("refuses to follow a symlink out of root", func(t *testing.T) {
+	t.Run("leaves no temporary behind once the file is published", func(t *testing.T) {
+		dir := t.TempDir()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer func() { _ = root.Close() }()
+
+		if _, err := savePart(root, "x.json", strings.NewReader("hello")); err != nil {
+			t.Fatalf("savePart: %v", err)
+		}
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "x.json" {
+			names := make([]string, len(entries))
+			for i, e := range entries {
+				names[i] = e.Name()
+			}
+			t.Errorf("directory holds %v, want only x.json", names)
+		}
+	})
+
+	t.Run("publishes the file only once all of it is there", func(t *testing.T) {
+		dir := t.TempDir()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer func() { _ = root.Close() }()
+
+		// Look at the directory from inside the copy, once the first chunk
+		// has been written but before the last one has: this is the window a
+		// build or the watcher would be reading results in, and the file must
+		// not be visible under its final name yet. Copying straight into that
+		// name would show them a truncated result and have them take it for a
+		// malformed one.
+		var seenEarly bool
+		src := io.MultiReader(
+			strings.NewReader(`{"uuid":`),
+			&hookReader{r: strings.NewReader(`"a"}`), fn: func() {
+				if _, err := os.Stat(filepath.Join(dir, "x.json")); err == nil {
+					seenEarly = true
+				}
+			}},
+		)
+
+		if _, err := savePart(root, "x.json", src); err != nil {
+			t.Fatalf("savePart: %v", err)
+		}
+
+		if seenEarly {
+			t.Error("x.json was visible under its final name while still half-written")
+		}
+
+		got, err := os.ReadFile(filepath.Join(dir, "x.json"))
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if string(got) != `{"uuid":"a"}` {
+			t.Errorf("file content = %q, want the whole stream", got)
+		}
+	})
+
+	t.Run("does not write through a symlink out of root", func(t *testing.T) {
 		dir := t.TempDir()
 		outside := filepath.Join(t.TempDir(), "escaped.json")
 		if err := os.Symlink(outside, filepath.Join(dir, "evil.json")); err != nil {
@@ -324,8 +397,48 @@ func TestSavePart(t *testing.T) {
 		}
 		defer func() { _ = root.Close() }()
 
+		// Publishing by rename replaces a planted symlink rather than being
+		// refused by it: rename acts on the link itself, never on what it
+		// points at. That is a change from copying into the final name
+		// directly, which os.Root rejected outright - but only in what the
+		// call answers, not in where the bytes land. What matters is asserted
+		// below: nothing is written outside the root either way, and the link
+		// is gone rather than left aimed out of it.
+		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err != nil {
+			t.Fatalf("savePart: %v", err)
+		}
+
+		if _, err := os.Stat(outside); !os.IsNotExist(err) {
+			t.Errorf("data escaped to %q (stat err = %v)", outside, err)
+		}
+
+		fi, err := os.Lstat(filepath.Join(dir, "evil.json"))
+		if err != nil {
+			t.Fatalf("Lstat: %v", err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			t.Error("evil.json is still a symlink pointing out of the root")
+		}
+	})
+
+	t.Run("refuses a symlink planted under the temporary name", func(t *testing.T) {
+		dir := t.TempDir()
+		outside := filepath.Join(t.TempDir(), "escaped.json")
+		// The scratch name is derived from the caller's, so it is guessable.
+		// os.Root has to cover it as well as the final name, or the temporary
+		// becomes a way around the very protection the final name has.
+		if err := os.Symlink(outside, filepath.Join(dir, "evil.json.part")); err != nil {
+			t.Fatalf("setup symlink: %v", err)
+		}
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer func() { _ = root.Close() }()
+
 		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err == nil {
-			t.Fatal("savePart followed the symlink, want an error")
+			t.Fatal("savePart wrote through the temporary name, want an error")
 		}
 		if _, err := os.Stat(outside); !os.IsNotExist(err) {
 			t.Errorf("data escaped to %q (stat err = %v)", outside, err)
@@ -337,6 +450,20 @@ func TestSavePart(t *testing.T) {
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+// hookReader runs fn once, just before the first byte is read out of r. It is
+// how these tests reach into the middle of an upload: whatever fn does happens
+// with the transfer already under way but not yet finished.
+type hookReader struct {
+	r    io.Reader
+	fn   func()
+	once sync.Once
+}
+
+func (h *hookReader) Read(p []byte) (int, error) {
+	h.once.Do(h.fn)
+	return h.r.Read(p)
+}
 
 func TestHandleMaxBytesError(t *testing.T) {
 	t.Run("answers 413 and names the limit", func(t *testing.T) {
@@ -495,5 +622,63 @@ func TestSendResultsSetsReadDeadlines(t *testing.T) {
 	// body was actually wrapped and refreshed while the upload was read.
 	if len(rec.deadlines) < 2 {
 		t.Fatalf("got %d deadlines, want the probe plus at least one per-read refresh", len(rec.deadlines))
+	}
+}
+
+func TestSendResultsLiftsTheWriteDeadline(t *testing.T) {
+	s, _ := newTestServer(t, "demo")
+	body, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
+
+	r := httptest.NewRequest(http.MethodPost, "/projects/demo/results", body)
+	r.SetPathValue("id", "demo")
+	r.Header.Set("Content-Type", ct)
+
+	before := time.Now()
+	rec := newDeadlineRecorder()
+	s.sendResults(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body)
+	}
+
+	// The server's WriteTimeout is counted from the moment the request headers
+	// are read, so it covers the upload itself and not just the reply. A
+	// gigabyte-capped upload does not fit in it, and the handler has to push
+	// the deadline out or the response to a long upload cannot be written at
+	// all - every file lands on disk and the client is told nothing.
+	if len(rec.writeDeadlines) != 1 {
+		t.Fatalf("got %d write deadlines, want exactly 1", len(rec.writeDeadlines))
+	}
+	if got, want := rec.writeDeadlines[0], before.Add(uploadWriteDeadline); got.Before(want) {
+		t.Errorf("write deadline = %v, want at least %v (uploadWriteDeadline out from the start)", got, want)
+	}
+}
+
+func TestSendResultsProjectDeletedMidUpload(t *testing.T) {
+	s, dir := newTestServer(t, "demo")
+	body, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
+
+	// The handler opens its os.Root on the results directory before it reads
+	// the first byte of the body, so removing the project here lands the
+	// upload exactly where a concurrent DELETE /projects/demo would: a root
+	// held open on a directory that is no longer attached to anything.
+	hooked := &hookReader{r: body, fn: func() {
+		if err := os.RemoveAll(filepath.Join(dir, "demo")); err != nil {
+			t.Errorf("removing the project mid-upload: %v", err)
+		}
+	}}
+
+	w := do(s, "demo", hooked, ct)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
+	}
+	// Exactly one message, not two. The 404 branch has to return: falling
+	// through into the generic error handling below it writes a second
+	// http.Error onto a response that has already been sent, which
+	// net/http reports as a superfluous WriteHeader call and which leaves
+	// the client reading both answers glued together.
+	if got := w.Body.String(); got != "project not found\n" {
+		t.Errorf("body = %q, want just the 404 message", got)
 	}
 }
