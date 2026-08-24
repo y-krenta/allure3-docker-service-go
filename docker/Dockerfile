@@ -1,4 +1,7 @@
-FROM golang:1.26.5 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.5 AS build
+
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -8,8 +11,7 @@ RUN go mod download
 COPY ["cmd/", "./cmd/"]
 COPY ["internal/", "./internal/"]
 
-
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/allure-service ./cmd/allure-service
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/allure-service ./cmd/allure-service
 
 FROM node:24-slim
 ARG ALLURE_VERSION=3.15.0
