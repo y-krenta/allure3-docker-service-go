@@ -508,6 +508,53 @@ func TestServeProjectReport(t *testing.T) {
 		}
 	})
 
+	t.Run("a directory without an index.html is not listed", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "latest", time.Now())
+
+		// data/ is one of the subdirectories an Allure report is full of:
+		// no index.html of its own, and holding internals - attachment
+		// files, history, widget JSON - that http.ServeFileFS would answer
+		// with a generated listing of.
+		data := filepath.Join(projects.ReportsDir(dir, "demo"), "latest", "data")
+		if err := os.MkdirAll(data, 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(data, "secret-attachment.txt"), []byte("private"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/latest/data/", nil,
+			map[string]string{"id": "demo", "path": "latest/data/"})
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
+		}
+		if strings.Contains(w.Body.String(), "secret-attachment.txt") {
+			t.Errorf("response listed the directory's contents: %s", w.Body)
+		}
+	})
+
+	t.Run("served files must be revalidated before reuse", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "latest", time.Now())
+
+		// The report is republished at these same addresses by every
+		// rebuild, so a browser that reuses a cached copy without asking
+		// shows an old report with nothing to say so.
+		for _, tc := range []struct{ name, path string }{
+			{"index through the directory", "latest/"},
+			{"a file by name", "latest/index.html"},
+		} {
+			w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/"+tc.path, nil,
+				map[string]string{"id": "demo", "path": tc.path})
+
+			if got := w.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("%s: Cache-Control = %q, want %q", tc.name, got, "no-cache")
+			}
+		}
+	})
+
 	t.Run("does not serve files outside the reports dir", func(t *testing.T) {
 		s, dir := newTestServer(t, "demo")
 		secret := filepath.Join(dir, "secret.txt")

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -186,6 +187,30 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// serveProjectReport handles GET /projects/{id}/reports/{path...}, serving the
+// project's report tree as static files: the published "latest" build and every
+// archived numbered one beside it.
+//
+// A directory is served only through an index.html of its own. Without that
+// rule http.ServeFileFS answers with a generated listing of whatever the
+// directory holds, and an Allure report is mostly directories that have none -
+// data/, widgets/ and the rest, carrying attachment files, history and widget
+// JSON. Nothing there is meant to be browsable, and the Flask service this
+// replaced never listed a directory either.
+//
+// Nothing here is cacheable without revalidation. Every rebuild republishes the
+// whole report at the same addresses, so a browser holding a cached copy has no
+// way to notice it is looking at an old one. no-cache leaves the bytes in the
+// cache but makes the browser ask before using them, and an unchanged file
+// still answers 304 off the Last-Modified that ServeFileFS sets: the cost is a
+// round trip, not a re-download. It also keeps the 301 below out of the
+// permanent redirect cache, which is the same worry that has latestReport
+// answering 302.
+//
+// Responds 200 with the file, 301 for an explicit index.html (net/http
+// canonicalises it to "./"), 400 if id fails projects.ValidateProjectID or the
+// path is empty, and 404 for anything absent - a directory without an
+// index.html included.
 func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireProjectID(w, r)
 	if !ok {
@@ -199,6 +224,17 @@ func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rootDir := os.DirFS(projects.ReportsDir(s.projectsDir, id))
+
+	fi, err := fs.Stat(rootDir, reportPath)
+	if err == nil && fi.IsDir() {
+		if _, err := fs.Stat(rootDir, path.Join(reportPath, "index.html")); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+	}
+
+	// Set after the check above so a 404 does not carry it.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFileFS(w, r, rootDir, reportPath)
 
 }
