@@ -15,7 +15,7 @@ services:
       # The port is open to the network: CI runners on other machines have to
       # reach the service. In 0.0.1 it authenticates nobody, so deploy it only
       # on a trusted internal network - whoever reaches the port can write and
-      # delete. Outside access arrives in 0.0.2 along with built-in
+      # delete. Outside access arrives in 0.2 along with built-in
       # authentication.
       - "${ALLURE_SERVICE_PORT:-5050}:5050"
     volumes:

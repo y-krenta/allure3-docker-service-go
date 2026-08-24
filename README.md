@@ -4,7 +4,7 @@ A web service that stores and serves **Allure 3** test reports with the history 
 
 This is a **fork** of [`fescobar/allure-docker-service`](https://github.com/fescobar/allure-docker-service), rewritten from **Python/Flask + Allure 2 (Java)** to **Go + Allure 3 (Node.js)**. See [Differences from upstream](#differences-from-upstream).
 
-> ⚠️ **Status: 0.0.1, no authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.0.2 — see [Not implemented yet](#not-implemented-yet).
+> ⚠️ **Status: 0.0.1, no authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.2 — see [Not implemented yet](#not-implemented-yet).
 
 Table of contents
 =================
@@ -400,7 +400,7 @@ The service is a single stateless process plus a data directory, so it deploys l
 
 Parsed or planned, but with no behaviour behind them today:
 
-- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.0.2. Until then, keep the service on a trusted network.
+- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.2. Until then, keep the service on a trusted network.
 - **TLS** (`TLS`) — setting it refuses to start; terminate TLS at a reverse proxy for now.
 - **`OPTIMIZE_STORAGE`** — parsed, ignored; planned for a later release. Setting it logs a warning at startup.
 - **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.
