@@ -53,7 +53,7 @@ func getEnvAsBool(key string, defaultValue bool) bool {
 	}
 	val, err := strconv.ParseBool(raw)
 	if err != nil {
-		log.Printf("Ошибка парсинга %s: %v, используем значение по умолчанию: %v", key, err, defaultValue)
+		log.Printf("[WARN] %s=%q not a bool (%v), using %v", key, raw, err, defaultValue)
 		return defaultValue
 	}
 	return val
@@ -69,12 +69,12 @@ func getEnvAsInt(key string, defaultValue int) int {
 
 	val, err := strconv.Atoi(raw)
 	if err != nil {
-		log.Printf("[WARN] %s=%q неверный формат, используем %d", key, raw, defaultValue)
+		log.Printf("[WARN] %s=%q malformed, using %d", key, raw, defaultValue)
 		return defaultValue
 	}
 
 	if val < 0 {
-		log.Printf("[WARN] %s=%d отрицательное, используем %d", key, val, defaultValue)
+		log.Printf("[WARN] %s=%d negative, using %d", key, val, defaultValue)
 		return defaultValue
 	}
 
@@ -92,12 +92,12 @@ func getEnvAsDurationSeconds(key string, defaultValue time.Duration) time.Durati
 
 	sec, err := strconv.Atoi(v)
 	if err != nil {
-		log.Printf("[WARN] %s=%q не число, используем %v", key, v, defaultValue)
+		log.Printf("[WARN] %s=%q not a number, using %v", key, v, defaultValue)
 		return defaultValue
 	}
 
 	if sec <= 0 {
-		log.Printf("[WARN] %s=%d <= 0, используем %v", key, sec, defaultValue)
+		log.Printf("[WARN] %s=%d <= 0, using %v", key, sec, defaultValue)
 		return defaultValue
 	}
 

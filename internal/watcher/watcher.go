@@ -16,7 +16,7 @@ type StartFunc func(ctx context.Context, projectID string) error
 type fingerprint struct {
 	count  int
 	size   int64
-	newest int64 // самая свежая mtime, UnixNano
+	newest int64
 }
 
 func scan(dir string) (fingerprint, error) {

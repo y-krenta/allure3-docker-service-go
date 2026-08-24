@@ -4,28 +4,32 @@ services:
       context: .
       dockerfile: docker/Dockerfile
       args:
-        # Пин версии Allure. Совпадает с дефолтом в Dockerfile; вынесен сюда,
-        # чтобы обновление версии было видно в одном месте с остальным
-        # развёртыванием.
+        # Allure version pin. Matches the default in the Dockerfile; kept here
+        # as well so a version bump is visible in the same place as the rest of
+        # the deployment.
         ALLURE_VERSION: 3.15.0
     image: allure3-service:0.0.1
     restart: unless-stopped
+    # docker stop allows 10 seconds before SIGKILL by default. Raised to 30 so
+    # the service's own shutdownTimeout (25s) fits inside it: uploads and
+    # exports in flight get to finish instead of being cut off mid-response.
+    stop_grace_period: 30s
     environment:
       KEEP_HISTORY: 1
       KEEP_HISTORY_LATEST: 60
-      # 0 - вотчер выключен, отчёты собираются только по запросу.
+      # 0 - the watcher is off, reports are built on request only.
       CHECK_RESULTS_EVERY_SECONDS: 0
     ports:
-      # Порт открыт в сеть: до сервиса должны дотягиваться CI-раннеры с
-      # других машин. В 0.0.1 сервис никого не аутентифицирует, поэтому
-      # разворачивать его следует только в доверенной внутренней сети -
-      # кто дотянулся до порта, тот может писать и удалять. Доступ снаружи
-      # появится в 0.0.2 вместе со встроенной аутентификацией.
+      # The port is open to the network: CI runners on other machines have to
+      # reach the service. In 0.0.1 it authenticates nobody, so deploy it only
+      # on a trusted internal network - whoever reaches the port can write and
+      # delete. Outside access arrives in 0.0.2 along with built-in
+      # authentication.
       - "${ALLURE_SERVICE_PORT:-5050}:5050"
     volumes:
-      # Весь корень хранилища одним монтированием: публикация отчёта - это
-      # переименование каталога из .tmp в reports/latest, а rename не работает
-      # через границу файловых систем. Каталог на хосте должен принадлежать
-      # UID 1000 - тому, под которым работает сервис:
+      # The whole storage root under a single mount: publishing a report means
+      # renaming a directory from .tmp into reports/latest, and rename does not
+      # work across a filesystem boundary. The host directory has to be owned by
+      # UID 1000, the one the service runs as:
       #   mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects
       - ./.data/projects:/app/projects
