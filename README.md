@@ -27,6 +27,7 @@ Table of contents
 * [Opening the report](#opening-the-report)
 * [Deploying](#deploying)
    * [File permissions](#file-permissions)
+   * [Updating](#updating)
    * [Kubernetes](#kubernetes)
 * [Known issues](#known-issues)
 * [Not implemented yet](#not-implemented-yet)
@@ -50,7 +51,10 @@ Multiple isolated projects are supported out of the box; a project called `defau
 
 ## Quick start
 
-No image is published yet — build from source. Everything is served on a single port, **5050**.
+Images are published to GHCR for `linux/amd64` and `linux/arm64`:
+**`ghcr.io/y-krenta/allure3-docker-service-go`** ([all versions](https://github.com/y-krenta/allure3-docker-service-go/pkgs/container/allure3-docker-service-go)). Everything is served on a single port, **5050**.
+
+Pin an exact version in production and move it deliberately; `latest` exists for trying the service out.
 
 ### Docker Compose
 
@@ -58,19 +62,14 @@ The repository ships a ready [`docker-compose.yml`](docker-compose.yml):
 
 ```sh
 mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects   # Linux only, see File permissions
-docker compose up -d --build
+docker compose up -d
 docker compose logs -f allure-service
 ```
 
 ```yaml
 services:
   allure-service:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      args:
-        ALLURE_VERSION: 3.15.0
-    image: allure3-service:0.0.1
+    image: ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
     restart: unless-stopped
     environment:
       KEEP_HISTORY: 1
@@ -87,12 +86,10 @@ Mount the **projects root as a whole**. Publishing a report renames a directory 
 ### Docker run
 
 ```sh
-docker build -f docker/Dockerfile -t allure3-service:0.0.1 .
-
 docker run -d -p 5050:5050 \
            -e KEEP_HISTORY=1 -e KEEP_HISTORY_LATEST=60 \
            -v ${PWD}/.data/projects:/app/projects \
-           allure3-service:0.0.1
+           ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
 ```
 
 On Windows `${PWD}` only works in [Git Bash](https://git-scm.com/downloads) (`-v "/$(pwd)/.data/projects:/app/projects"`); in PowerShell/CMD use an absolute path.
@@ -374,6 +371,21 @@ mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects
 
 Docker Desktop on macOS and Windows handles ownership for you. Do not work around this by running the container as `root`.
 
+### Updating
+
+Change the tag in `docker-compose.yml` to the version you want — see the [releases](https://github.com/y-krenta/allure3-docker-service-go/releases) for what changed — and:
+
+```sh
+docker compose pull
+docker compose up -d
+```
+
+The container is destroyed and recreated; your reports and history are not inside it, so they survive. Rolling back is the same two commands with the previous tag.
+
+Three things must stay the same across versions, or the new container comes up without the old data: the **mount path**, the **host directory**, and the **UID the image runs as** (1000). The third is part of the compatibility contract, not an implementation detail — it will not change without a major version.
+
+A volume is not a backup: it does not survive `rm -rf`, a failed disk or a mistaken `docker volume rm`. Take a periodic `tar` of the projects root onto another machine.
+
 ### Kubernetes
 
 The service is a single stateless process plus a data directory, so it deploys like any container: a Deployment, a Service on port 5050, and a PersistentVolumeClaim mounted at `/app/projects` (`ReadWriteOnce` is enough — do not run several replicas over the same volume, the build locks are per process). Keep `CHECK_RESULTS_EVERY_SECONDS=0` and drive generation from CI. `GET /health` works as both liveness and readiness probe; the image already declares an equivalent `HEALTHCHECK`.
@@ -394,7 +406,7 @@ Parsed or planned, but with no behaviour behind them today:
 - **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.
 - **Swagger / OpenAPI document** — the endpoint table and examples above are the API reference for now.
 - **`URL_PREFIX`** — mount the service at the proxy root for now. Report links are relative, so a path-stripping proxy works.
-- **Emailable report**, **published Docker image**, **CI pipeline**.
+- **Emailable report**, **`armv7` images**.
 
 ## Differences from upstream
 
@@ -421,6 +433,8 @@ Removed:
 ## Development
 
 ```sh
+docker build -f docker/Dockerfile -t allure3-service:dev .   # the image, from this tree
+
 go build ./...
 go vet ./...
 gofmt -l internal/ cmd/     # prints files needing formatting; silence is clean
