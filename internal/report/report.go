@@ -307,9 +307,16 @@ func (g *Generator) checkProject(projectID string) error {
 // (getNextBuildNumber) and, from the second build on, records it in
 // executor.json (writeExecutor). After a successful publish, the report is
 // additionally archived to its own numbered directory
-// (projects.NumberedReportDir) alongside the published "latest" - a
-// best-effort copy, since the report is already live and correct by that
-// point and a failed archive should not be reported as a failed build.
+// (projects.NumberedReportDir) alongside the published "latest". That copy is
+// staged in TmpRoot and renamed into place, the same way the report itself is
+// published: an archive interrupted part-way leaves nothing under the build
+// number rather than a directory holding some of the files, which nothing
+// would ever clean up - the next build claims a higher number and never looks
+// back, and getProject lists what it finds as a real build.
+//
+// Archiving is best-effort either way. The report is already live and correct
+// by the time it starts, so a failure there is logged rather than reported as
+// a failed build.
 //
 // It returns ErrProjectNotFound (wrapped) if the project has no results
 // directory, ErrNoResults (wrapped) if that directory is empty, an error
@@ -404,9 +411,13 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	ok = true
 
 	dst := projects.NumberedReportDir(g.projectsDir, projectID, buildNumber)
-	err = os.CopyFS(dst, os.DirFS(latest))
+	archive := filepath.Join(tmp, "archive")
+
+	err = os.CopyFS(archive, os.DirFS(latest))
 	if err != nil {
 		slog.Error("archiving report", "err", err, "project_id", projectID)
+	} else if err = os.Rename(archive, dst); err != nil {
+		slog.Error("publishing archived report", "err", err, "project_id", projectID)
 	}
 
 	err = g.pruneReports(projectID)

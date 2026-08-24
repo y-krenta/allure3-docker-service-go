@@ -18,6 +18,22 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/watcher"
 )
 
+// shutdownTimeout is how long in-flight requests get to finish once a signal
+// has arrived. Shutdown returning does not stop a handler - only the process
+// exiting does - so this is really the budget before running requests are cut
+// off mid-response.
+//
+// Its ceiling is whatever the supervisor allows between SIGTERM and SIGKILL:
+// docker stop gives ten seconds unless stop_grace_period says otherwise, and
+// the compose file in this repo raises that to thirty to leave room for this.
+// Raising the number here without raising it there buys nothing, because the
+// process is killed first.
+//
+// It deliberately does not try to cover every handler. An export or a large
+// upload may legitimately run for minutes, and holding a shutdown open that
+// long is worse than cutting them off.
+const shutdownTimeout = 25 * time.Second
+
 func main() {
 	cfg := config.Load()
 	if cfg.SecurityEnable {
@@ -95,12 +111,11 @@ func main() {
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	errShutdown := srv.Shutdown(ctx)
 	stopWatch()
 	<-watchDone
-
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	errShutdown := srv.Shutdown(ctx)
 	if errShutdown != nil {
 		log.Println(errShutdown)
 	}

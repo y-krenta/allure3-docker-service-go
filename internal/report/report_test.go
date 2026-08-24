@@ -60,6 +60,17 @@ const (
 	// cliSlow succeeds, but takes long enough that a test can observe the
 	// build while it is still running.
 	cliSlow = "#!/bin/sh\nsleep 0.5\nprintf 'fresh' > \"$4/index.html\"\n"
+	// cliUnarchivable builds a perfectly good report that cannot be copied
+	// afterwards: os.CopyFS refuses anything that is not a regular file or a
+	// directory, and it refuses it part-way through, having already copied
+	// whatever sorted before it. The names put the fifo in the middle of the
+	// walk - index.html, m-fifo, z.txt - so the failure lands with some files
+	// copied and some not, which is the shape a build killed mid-archive
+	// leaves behind.
+	cliUnarchivable = "#!/bin/sh\n" +
+		"printf 'fresh' > \"$4/index.html\"\n" +
+		"mkfifo \"$4/m-fifo\"\n" +
+		"printf 'last' > \"$4/z.txt\"\n"
 	// cliFloodStderr fails after burying its diagnostic under roughly 9 KB of
 	// noise, the way the real CLI does when it chokes on a history file: it
 	// echoes the offending line first and only then says what was wrong with
@@ -988,6 +999,36 @@ func TestGenerateArchiveFailureDoesNotFailTheBuild(t *testing.T) {
 
 	if got := readLatest(t, g, "demo"); got != "fresh" {
 		t.Errorf("latest report = %q, want %q; a failed archive must not affect publishing", got, "fresh")
+	}
+}
+
+func TestGenerateLeavesNoPartialArchiveBehind(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliUnarchivable), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil (archiving is best-effort)", err)
+	}
+
+	// The copy is staged in tmp and renamed into place, so a copy that dies
+	// half-way leaves nothing under the build number at all. Copying straight
+	// into it would leave a numbered report holding some of its files and not
+	// others - permanently, because the next build claims a higher number and
+	// never revisits this one, while getProject lists it as a real build the
+	// moment index.html is among the files that made it.
+	archived := projects.NumberedReportDir(g.projectsDir, "demo", 1)
+	if _, err := os.Stat(archived); !errors.Is(err, os.ErrNotExist) {
+		entries, _ := os.ReadDir(archived)
+		names := make([]string, len(entries))
+		for i, e := range entries {
+			names[i] = e.Name()
+		}
+		t.Errorf("a partial archive was published at build 1: %v (stat err = %v)", names, err)
+	}
+
+	// The build itself is untouched by any of this: the report is already
+	// live by the time archiving is attempted.
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want %q", got, "fresh")
 	}
 }
 
