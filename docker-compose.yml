@@ -1,0 +1,27 @@
+services:
+  allure-service:
+    image: ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
+    restart: unless-stopped
+    # docker stop allows 10 seconds before SIGKILL by default. Raised to 30 so
+    # the service's own shutdownTimeout (25s) fits inside it: uploads and
+    # exports in flight get to finish instead of being cut off mid-response.
+    stop_grace_period: 30s
+    environment:
+      KEEP_HISTORY: 1
+      KEEP_HISTORY_LATEST: 60
+      # 0 - the watcher is off, reports are built on request only.
+      CHECK_RESULTS_EVERY_SECONDS: 0
+    ports:
+      # The port is open to the network: CI runners on other machines have to
+      # reach the service. In 0.0.1 it authenticates nobody, so deploy it only
+      # on a trusted internal network - whoever reaches the port can write and
+      # delete. Outside access arrives in 0.0.2 along with built-in
+      # authentication.
+      - "${ALLURE_SERVICE_PORT:-5050}:5050"
+    volumes:
+      # The whole storage root under a single mount: publishing a report means
+      # renaming a directory from .tmp into reports/latest, and rename does not
+      # work across a filesystem boundary. The host directory has to be owned by
+      # UID 1000, the one the service runs as:
+      #   mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects
+      - ./.data/projects:/app/projects
