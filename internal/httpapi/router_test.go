@@ -148,3 +148,20 @@ func TestStatusRecorder(t *testing.T) {
 		t.Errorf("delegated status = %d, want %d", w.Code, http.StatusTeapot)
 	}
 }
+
+func TestUnwrapResponseWriter(t *testing.T) {
+	inner := httptest.NewRecorder()
+	wrapped := &statusRecorder{ResponseWriter: &statusRecorder{ResponseWriter: inner}}
+
+	// http.MaxBytesReader reaches the writer that owns the connection with a
+	// bare type assertion instead of an Unwrap walk, so a handler that wants an
+	// oversized request answered with a clean 413 - and the connection closed
+	// rather than drained - has to hand it the writer underneath the
+	// middleware itself.
+	if got := unwrapResponseWriter(wrapped); got != http.ResponseWriter(inner) {
+		t.Errorf("unwrapResponseWriter returned %T, want the innermost *httptest.ResponseRecorder", got)
+	}
+	if got := unwrapResponseWriter(inner); got != http.ResponseWriter(inner) {
+		t.Errorf("unwrapResponseWriter(%T) = %T, want it returned unchanged", inner, got)
+	}
+}

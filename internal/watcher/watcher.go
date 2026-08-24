@@ -80,6 +80,9 @@ func sweep(ctx context.Context, projectsDir string, seen map[string]fingerprint,
 			continue
 		}
 		id := entry.Name()
+		if err := projects.ValidateProjectID(id); err != nil {
+			continue
+		}
 		fp, err := scan(projects.ResultsDir(projectsDir, id))
 		if err != nil {
 			continue
@@ -100,6 +103,9 @@ func sweep(ctx context.Context, projectsDir string, seen map[string]fingerprint,
 
 		case errors.Is(err, report.ErrAlreadyRunning):
 			continue
+
+		case errors.Is(err, report.ErrNoResults):
+			seen[id] = fp
 
 		default:
 			slog.Error("watcher: generation failed to start", "project_id", id, "err", err)

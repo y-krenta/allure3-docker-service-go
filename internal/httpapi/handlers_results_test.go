@@ -421,12 +421,13 @@ func TestSavePart(t *testing.T) {
 		}
 	})
 
-	t.Run("refuses a symlink planted under the temporary name", func(t *testing.T) {
+	t.Run("does not write through a symlink planted under a scratch name", func(t *testing.T) {
 		dir := t.TempDir()
 		outside := filepath.Join(t.TempDir(), "escaped.json")
-		// The scratch name is derived from the caller's, so it is guessable.
-		// os.Root has to cover it as well as the final name, or the temporary
-		// becomes a way around the very protection the final name has.
+		// The scratch name carries a random suffix, so an attacker cannot
+		// plant anything under it in advance - this is the name it used to
+		// have. Either way the scratch file goes through root, which refuses
+		// any name that resolves outside it.
 		if err := os.Symlink(outside, filepath.Join(dir, "evil.json.part")); err != nil {
 			t.Fatalf("setup symlink: %v", err)
 		}
@@ -437,13 +438,108 @@ func TestSavePart(t *testing.T) {
 		}
 		defer func() { _ = root.Close() }()
 
-		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err == nil {
-			t.Fatal("savePart wrote through the temporary name, want an error")
+		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err != nil {
+			t.Fatalf("savePart: %v", err)
 		}
 		if _, err := os.Stat(outside); !os.IsNotExist(err) {
 			t.Errorf("data escaped to %q (stat err = %v)", outside, err)
 		}
+		if got := string(readFileT(t, filepath.Join(dir, "evil.json"))); got != "x" {
+			t.Errorf("evil.json = %q, want %q", got, "x")
+		}
 	})
+
+	t.Run("an empty part leaves the file already on disk alone", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "x.json"), []byte("good"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer func() { _ = root.Close() }()
+
+		n, err := savePart(root, "x.json", strings.NewReader(""))
+		if err != nil || n != 0 {
+			t.Fatalf("savePart = (%d, %v), want (0, nil)", n, err)
+		}
+
+		// A CI job re-posting a result it truncated locally must not destroy
+		// the copy the service already holds: publishing an empty file over it
+		// replaces a good result with nothing.
+		if got := string(readFileT(t, filepath.Join(dir, "x.json"))); got != "good" {
+			t.Errorf("x.json = %q, want the previous content %q", got, "good")
+		}
+		if names := dirEntries(t, dir); len(names) != 1 {
+			t.Errorf("results dir holds %v, want only the published file", names)
+		}
+	})
+
+	t.Run("concurrent parts of one name do not interleave", func(t *testing.T) {
+		dir := t.TempDir()
+		root, err := os.OpenRoot(dir)
+		if err != nil {
+			t.Fatalf("OpenRoot: %v", err)
+		}
+		defer func() { _ = root.Close() }()
+
+		// environment.properties, categories.json and executor.json are fixed
+		// names, unlike the UUID-named results: two CI jobs uploading one of
+		// them at the same time land on the same final name. A scratch name
+		// shared between them would have both copying into one file at
+		// independent offsets, publishing the interleaving.
+		a := strings.Repeat("a", 64<<10)
+		b := strings.Repeat("b", 64<<10)
+
+		var wg sync.WaitGroup
+		for _, content := range []string{a, b} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if _, err := savePart(root, "environment.properties", strings.NewReader(content)); err != nil {
+					t.Errorf("savePart: %v", err)
+				}
+			}()
+		}
+		wg.Wait()
+
+		got := string(readFileT(t, filepath.Join(dir, "environment.properties")))
+		if got != a && got != b {
+			t.Errorf("environment.properties is neither upload whole (len %d), want one of them intact", len(got))
+		}
+		if names := dirEntries(t, dir); len(names) != 1 {
+			t.Errorf("results dir holds %v, want only the published file", names)
+		}
+	})
+}
+
+// readFileT reads path or fails the test.
+func readFileT(t *testing.T, path string) []byte {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return data
+}
+
+// dirEntries lists the names in dir, so a test can assert that a scratch file
+// was cleaned up rather than left behind.
+func dirEntries(t *testing.T, dir string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
+	}
+	return names
 }
 
 // errReader always fails, standing in for a connection that drops mid-upload.

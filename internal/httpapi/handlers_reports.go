@@ -116,6 +116,8 @@ func (s *Server) clearHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	liftWriteDeadline(w, lockWaitDeadline, id)
+
 	err := s.reports.ClearHistory(r.Context(), id)
 	switch {
 	case errors.Is(err, report.ErrProjectNotFound):
@@ -169,11 +171,8 @@ func (s *Server) exportReport(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+base+`.zip"`)
 
-	rc := http.NewResponseController(w)
-	err = rc.SetWriteDeadline(time.Now().Add(exportWriteDeadline))
-	if err != nil {
-		slog.Error("failed to set write deadline", "err", err, "project_id", id)
-	}
+	liftWriteDeadline(w, exportWriteDeadline, id)
+
 	err = s.reports.ExportLatest(id, w)
 	if err != nil {
 		slog.Error("failed to export report", "err", err, "project_id", id)

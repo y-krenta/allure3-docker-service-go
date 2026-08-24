@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -49,7 +50,8 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		maxUploadBytes  = 1 << 30 // 1 GB
 		readIdleTimeout = 60 * time.Second
 	)
-	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+
+	r.Body = http.MaxBytesReader(unwrapResponseWriter(w), r.Body, maxUploadBytes)
 	rc := http.NewResponseController(w)
 
 	err := rc.SetReadDeadline(time.Now().Add(readIdleTimeout))
@@ -147,9 +149,6 @@ func (s *Server) sendResults(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if n == 0 {
-			if err := root.Remove(name); err != nil {
-				slog.Error("failed to remove empty uploaded file", "err", err, "file", name)
-			}
 			continue
 		}
 
@@ -193,10 +192,22 @@ func handleMaxBytesError(w http.ResponseWriter, err error) bool {
 // malformed one. A rename within one directory is atomic: a reader sees the
 // whole file or no file, never part of it.
 //
-// The scratch name is name with a suffix, so it is as guessable as name itself
-// and needs the same protection. It gets it: both go through root, which
+// The scratch name is name with a random suffix, so it is as guessable as name
+// itself and needs the same protection. It gets it: both go through root, which
 // refuses either one if it resolves outside - see the tests, which plant a
-// symlink under each name in turn.
+// symlink under each name in turn. The suffix is random rather than fixed
+// because result file names are only mostly unique: the UUID-named results
+// collide with nothing, but environment.properties, categories.json and
+// executor.json are fixed names, and two CI jobs uploading one of those at the
+// same time would otherwise share a single scratch file, copy into it at
+// independent offsets and publish the interleaving - after which the loser's
+// cleanup would delete what the winner had just renamed into place.
+//
+// An empty part is not published at all: it is dropped, and a file already
+// sitting at name is left alone. Renaming an empty scratch file over it would
+// destroy a good result and replace it with nothing, which is what a CI job
+// re-posting a result it truncated locally would otherwise do to the copy the
+// service already holds.
 //
 // A symlink already sitting at name is replaced rather than followed, because
 // rename acts on the link itself and not on what it points at. That differs
@@ -208,7 +219,7 @@ func handleMaxBytesError(w http.ResponseWriter, err error) bool {
 // what a project deleted mid-upload looks like from in here: root stays open on
 // a directory no longer attached to anything, and creating in it fails.
 func savePart(root *os.Root, name string, src io.Reader) (int64, error) {
-	tmp := name + ".part"
+	tmp := name + "." + rand.Text() + ".part"
 
 	f, err := root.Create(tmp)
 	if err != nil {
@@ -231,6 +242,9 @@ func savePart(root *os.Root, name string, src io.Reader) (int64, error) {
 	n, err := io.Copy(f, src)
 	if err != nil {
 		return n, fmt.Errorf("failed to copy data into file: %w", err)
+	}
+	if n == 0 {
+		return 0, nil
 	}
 	if err := f.Close(); err != nil {
 		return n, fmt.Errorf("failed to close file: %w", err)

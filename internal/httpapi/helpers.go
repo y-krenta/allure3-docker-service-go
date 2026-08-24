@@ -35,7 +35,49 @@ const (
 	// the client sees a broken connection and calls a successful upload
 	// failed.
 	uploadWriteDeadline = 15 * time.Minute
+
+	// lockWaitDeadline replaces the server's WriteTimeout for the handlers
+	// that take a project's lock and can therefore be left waiting for a build
+	// in flight: clearing results, clearing history and deleting a project.
+	// A build is bounded by the report package's own generate timeout of ten
+	// minutes, forty times the server-wide WriteTimeout, so without this the
+	// wait outlives the connection the answer has to go out on: the work is
+	// done, the project is cleared or deleted, and the caller sees a broken
+	// connection instead of its 204 and retries an operation that already
+	// succeeded.
+	lockWaitDeadline = 15 * time.Minute
 )
+
+// liftWriteDeadline pushes this response's write deadline out to d, replacing
+// the server-wide WriteTimeout for this one request. Failure is logged and
+// otherwise ignored: the handler can still do its work, it only risks losing
+// the reply, and refusing the request outright would be a worse answer than
+// the one the caller is already waiting for.
+func liftWriteDeadline(w http.ResponseWriter, d time.Duration, projectID string) {
+	err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(d))
+	if err != nil {
+		slog.Error("failed to set write deadline", "err", err, "project_id", projectID)
+	}
+}
+
+// unwrapResponseWriter peels the middleware wrappers off w and returns the
+// ResponseWriter underneath them all.
+//
+// It exists for http.MaxBytesReader, which tells the server to stop reading an
+// oversized request through a bare type assertion on the writer it was handed
+// - no Unwrap walk, unlike http.ResponseController - so handing it the
+// logger middleware's statusRecorder silently disables that: the 413 is
+// written, the connection is not marked for close, and the server goes on
+// trying to drain a body the client is still sending.
+func unwrapResponseWriter(w http.ResponseWriter) http.ResponseWriter {
+	for {
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return w
+		}
+		w = u.Unwrap()
+	}
+}
 
 // requireProjectID reads the {id} path value and validates it, returning the
 // project ID and whether it is usable.

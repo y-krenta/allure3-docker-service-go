@@ -248,6 +248,46 @@ func TestSweepKeepsFingerprintOnError(t *testing.T) {
 	}
 }
 
+func TestSweepConsumesAChangeWithNothingLeftToBuild(t *testing.T) {
+	root := t.TempDir()
+	writeResult(t, root, "proj", "a-result.json", "{}")
+
+	rec := &recorder{err: report.ErrNoResults}
+	seen := map[string]fingerprint{}
+
+	sweep(context.Background(), root, seen, rec.start, true)
+	if err := os.Remove(filepath.Join(projects.ResultsDir(root, "proj"), "a-result.json")); err != nil {
+		t.Fatal(err)
+	}
+	sweep(context.Background(), root, seen, rec.start, false)
+	sweep(context.Background(), root, seen, rec.start, false)
+
+	// An emptied results directory - DELETE /projects/{id}/results - has
+	// nothing to build from and will not until something is uploaded, which
+	// changes the fingerprint again. Retrying it every tick only fills the log
+	// with a refusal nothing can act on.
+	if got := rec.calls(); len(got) != 1 {
+		t.Errorf("calls = %v, want an empty results directory not to be retried", got)
+	}
+}
+
+func TestSweepIgnoresDirectoriesThatAreNotProjects(t *testing.T) {
+	root := t.TempDir()
+	// Uppercase: something created by hand under the projects root, which the
+	// service itself could never have made. Every start would fail validation.
+	writeResult(t, root, "NotAProject", "a-result.json", "{}")
+
+	rec := &recorder{}
+	seen := map[string]fingerprint{}
+
+	sweep(context.Background(), root, seen, rec.start, false)
+	sweep(context.Background(), root, seen, rec.start, false)
+
+	if got := rec.calls(); len(got) != 0 {
+		t.Errorf("calls = %v, want a directory that is not a project to be left alone", got)
+	}
+}
+
 func TestSweepIgnoresProjectsWithNothingToBuild(t *testing.T) {
 	root := t.TempDir()
 

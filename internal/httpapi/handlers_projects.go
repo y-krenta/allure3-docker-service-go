@@ -105,6 +105,10 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "The default directory cannot be deleted.", http.StatusForbidden)
 		return
 	}
+	// Delete waits out a build in flight rather than pulling the directory out
+	// from under it, so the reply has to outlive the server's WriteTimeout.
+	liftWriteDeadline(w, lockWaitDeadline, id)
+
 	err := s.reports.Delete(id)
 	if err != nil {
 		slog.Error("failed to delete project", "err", err, "project_id", id)
@@ -133,7 +137,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	projectPath := filepath.Join(s.projectsDir, id)
+	projectPath := projects.ProjectDir(s.projectsDir, id)
 	_, errStat := os.Stat(projectPath)
 	if errors.Is(errStat, os.ErrNotExist) {
 		http.Error(w, "project not found", http.StatusNotFound)
@@ -249,6 +253,8 @@ func (s *Server) clearResults(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+
+	liftWriteDeadline(w, lockWaitDeadline, id)
 
 	err := s.reports.ClearResults(id)
 	if errors.Is(err, report.ErrProjectNotFound) {

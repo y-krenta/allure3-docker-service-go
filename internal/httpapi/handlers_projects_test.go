@@ -573,3 +573,42 @@ func TestServeProjectReport(t *testing.T) {
 		}
 	})
 }
+
+func TestLockWaitingHandlersLiftTheWriteDeadline(t *testing.T) {
+	// Clearing results, clearing history and deleting a project all take the
+	// project's lock, and a build in flight holds it for as long as the report
+	// package's generate timeout - ten minutes, forty times the server's
+	// WriteTimeout. Without lifting the deadline the work still happens and
+	// the answer cannot be written: the caller sees a broken connection and
+	// retries an operation that already succeeded.
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		handler func(*Server) http.HandlerFunc
+	}{
+		{"clearResults", http.MethodDelete, "/projects/demo/results", func(s *Server) http.HandlerFunc { return s.clearResults }},
+		{"clearHistory", http.MethodPost, "/projects/demo/history/clean", func(s *Server) http.HandlerFunc { return s.clearHistory }},
+		{"deleteProject", http.MethodDelete, "/projects/demo", func(s *Server) http.HandlerFunc { return s.deleteProject }},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newTestServer(t, "demo")
+
+			r := httptest.NewRequest(tc.method, tc.path, nil)
+			r.SetPathValue("id", "demo")
+
+			before := time.Now()
+			rec := newDeadlineRecorder()
+			tc.handler(s)(rec, r)
+
+			if len(rec.writeDeadlines) != 1 {
+				t.Fatalf("got %d write deadlines, want exactly 1", len(rec.writeDeadlines))
+			}
+			if got, want := rec.writeDeadlines[0], before.Add(lockWaitDeadline); got.Before(want) {
+				t.Errorf("write deadline = %v, want at least %v (lockWaitDeadline out from the start)", got, want)
+			}
+		})
+	}
+}

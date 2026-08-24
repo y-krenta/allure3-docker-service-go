@@ -226,9 +226,23 @@ func (g *Generator) Status(projectID string) (Status, bool) {
 // there. The record is overwritten whole rather than merged: only the
 // goroutine running a build writes it, and its newer view always supersedes
 // the older one.
+//
+// A project with no record at all is left without one, rather than gaining
+// this status. The only way to reach that state mid-build is Delete, which
+// forgets the project deliberately - and it can land in exactly the window
+// between Generate releasing the project lock and the build goroutine
+// recording its outcome. Writing the status back there would leave a deleted
+// project reporting StateSucceeded, and a project later created under the same
+// ID inheriting a build it never ran, which is the very thing Delete exists to
+// prevent. tryStart, which creates the record when a build is claimed, is the
+// one place a status may appear from nothing.
 func (g *Generator) setStatus(projectID string, st Status) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	if _, ok := g.statuses[projectID]; !ok {
+		return
+	}
 
 	g.statuses[projectID] = st
 }
@@ -410,14 +424,16 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 
 	ok = true
 
-	dst := projects.NumberedReportDir(g.projectsDir, projectID, buildNumber)
-	archive := filepath.Join(tmp, "archive")
+	if g.historyLimit > 0 {
+		dst := projects.NumberedReportDir(g.projectsDir, projectID, buildNumber)
+		archive := filepath.Join(tmp, "archive")
 
-	err = os.CopyFS(archive, os.DirFS(latest))
-	if err != nil {
-		slog.Error("archiving report", "err", err, "project_id", projectID)
-	} else if err = os.Rename(archive, dst); err != nil {
-		slog.Error("publishing archived report", "err", err, "project_id", projectID)
+		err = os.CopyFS(archive, os.DirFS(latest))
+		if err != nil {
+			slog.Error("archiving report", "err", err, "project_id", projectID)
+		} else if err = os.Rename(archive, dst); err != nil {
+			slog.Error("publishing archived report", "err", err, "project_id", projectID)
+		}
 	}
 
 	err = g.pruneReports(projectID)
@@ -524,7 +540,7 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, configPat
 		}
 
 		return fmt.Errorf(
-			"running allure awesome command: %w, stderr (last %d bytes): %s",
+			"running allure generate command: %w, stderr (last %d bytes): %s",
 			err,
 			maxStderrBytes,
 			strings.ToValidUTF8(msg, ""),

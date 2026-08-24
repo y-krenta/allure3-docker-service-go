@@ -251,7 +251,7 @@ HTTP/1.1 200 OK
 {"processed_files":["9f0a-result.json","environment.properties"],"processed_files_count":2}
 ```
 
-Each filename is sanitised: the path is dropped (`a/b/x.json` → `x.json`) and only ASCII letters, digits, `.`, `_` and `-` survive. Empty files are skipped silently. The total upload is capped at 1 GB. Uploads are not transactional — files written before an error stay on disk, and a retry overwrites them, since Allure names results after UUIDs.
+Each filename is sanitised: the path is dropped (`a/b/x.json` → `x.json`) and only ASCII letters, digits, `.`, `_` and `-` survive. Empty files are skipped silently, and a file already stored under that name is left as it was. The total upload is capped at 1 GB. Uploads are not transactional — files written before an error stay on disk, and a retry overwrites them, since Allure names results after UUIDs.
 
 Wipe the results (top-level files only; the published report is untouched):
 

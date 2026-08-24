@@ -1032,6 +1032,30 @@ func TestGenerateLeavesNoPartialArchiveBehind(t *testing.T) {
 	}
 }
 
+func TestGenerateSkipsTheArchiveWhenHistoryIsOff(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliUnarchivable), "demo")
+	g.historyLimit = 0 // KEEP_HISTORY=false
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	// With the numbered archives switched off, pruneReports deletes every one
+	// it finds - so copying the report into place first only to erase it costs
+	// a full duplicate of the report per build for nothing. The CLI here
+	// produces a report os.CopyFS cannot copy, and a failed copy leaves its
+	// partial work in tmp: an archive directory there is the proof that the
+	// copy was atempted at all.
+	staged := filepath.Join(projects.TmpRoot(g.projectsDir, "demo"), "archive")
+	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the report was staged for archiving at %s (stat err = %v), want no archiving with the limit at 0", staged, err)
+	}
+
+	if got := readLatest(t, g, "demo"); got != "fresh" {
+		t.Errorf("latest report = %q, want %q", got, "fresh")
+	}
+}
+
 func TestPruneReportsKeepsAllWhenUnderTheLimit(t *testing.T) {
 	dir := t.TempDir()
 	if err := projects.CreateDir(dir, "demo"); err != nil {
@@ -1672,6 +1696,32 @@ func TestDeleteForgetsTheProjectStatus(t *testing.T) {
 	// StateSucceeded and report a build it never ran.
 	if st, ok := g.Status("demo"); ok {
 		t.Errorf("Status after Delete = %+v, exists=%v, want no status at all", st, ok)
+	}
+}
+
+func TestDeleteOutlastsALateStatusWrite(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	waitForState(t, g, "demo", StateSucceeded)
+
+	if err := g.Delete("demo"); err != nil {
+		t.Fatalf("Delete = %v, want nil", err)
+	}
+
+	// The build goroutine records its outcome only after Generate has released
+	// the project lock, so a Delete arriving in that window takes the lock,
+	// removes the tree and forgets the status - and the write still lands
+	// afterwards. That is reproduced here by writing the status directly,
+	// which is all the goroutine does at that point. A project nobody is
+	// building must not grow a status out of nothing: the next project created
+	// under this ID would inherit a build it never ran.
+	g.setStatus("demo", Status{State: StateSucceeded, StartedAt: time.Now()})
+
+	if st, ok := g.Status("demo"); ok {
+		t.Errorf("Status after a late write = %+v, exists=%v, want no status at all", st, ok)
 	}
 }
 
