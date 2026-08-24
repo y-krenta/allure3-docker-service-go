@@ -11,14 +11,14 @@ import (
 // Config holds runtime configuration loaded from environment variables.
 // Use Load to obtain a populated instance; the zero value is not meaningful.
 type Config struct {
-	Port                 string        // Flask/Waitress listen port
-	SecurityEnable       bool          // Enable JWT auth
+	Port                 string        // listen port
+	SecurityEnable       bool          // Enable JWT auth; refused at startup, not implemented
 	KeepHistory          bool          // Preserve Allure history across runs
 	KeepHistoryLatest    int           // How many history entries to retain
 	CheckResultsInterval time.Duration // Auto-generate interval
-	OptimizeStorage      bool          // Strip large attachments
-	TLS                  bool          // Enable HTTPS
-	DevMode              bool          // Enables Flask debug reloader
+	OptimizeStorage      bool          // Strip large attachments; parsed, not implemented yet
+	TLS                  bool          // Enable HTTPS; refused at startup, not implemented
+	DevMode              bool          // Debug reloader; parsed, not implemented yet
 	ProjectsDir          string        // Default path projects
 	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
 }

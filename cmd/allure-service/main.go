@@ -39,6 +39,16 @@ func main() {
 	if cfg.SecurityEnable {
 		log.Fatal("SECURITY_ENABLED is not supported")
 	}
+	if cfg.TLS {
+		log.Fatal("TLS is not supported")
+	}
+	if cfg.OptimizeStorage {
+		log.Printf("[WARN] OPTIMIZE_STORAGE is set but not implemented yet; it has no effect")
+	}
+	if cfg.DevMode {
+		log.Printf("[WARN] DEV_MODE is set but not implemented yet; it has no effect")
+	}
+
 	resolved, err := exec.LookPath(cfg.AllureBin)
 	if err != nil {
 		log.Fatalf("allure CLI not found (ALLURE_BIN=%q): %v", cfg.AllureBin, err)

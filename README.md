@@ -115,7 +115,7 @@ The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or
 2026/08/13 00:34:39 Starting server on port 5050
 ```
 
-`Ctrl+C` / `SIGTERM` shuts down gracefully (5-second drain).
+`Ctrl+C` / `SIGTERM` shuts down gracefully: the watcher stops first, so no new build is started on the way out, and requests already in flight get a 25-second drain. Long uploads and exports can outlast that and are cut off — the Compose file allows a 30-second `stop_grace_period` to leave room for the drain, so raise both together if you need more. A report build in progress is not waited for: builds publish by renaming a finished tree into place, so one cut short leaves the last good report standing.
 
 ## Generating Allure results
 
@@ -141,7 +141,7 @@ All configuration is environment variables; invalid values fall back to the defa
 
 The effective history limit is printed at startup as `history limit N`.
 
-`SECURITY_ENABLED=1` **refuses to start** (`SECURITY_ENABLED is not supported`) — better a loud failure than a service that silently ignores the flag and serves everything unauthenticated. `OPTIMIZE_STORAGE`, `TLS` and `DEV_MODE` are parsed but do nothing yet.
+`SECURITY_ENABLED=1` and `TLS=1` **refuse to start** (`SECURITY_ENABLED is not supported`, `TLS is not supported`) — better a loud failure than a service that silently ignores the flag and either serves everything unauthenticated or carries in cleartext what the operator believes is encrypted. `OPTIMIZE_STORAGE` and `DEV_MODE` are parsed but do nothing yet; setting either logs a warning at startup.
 
 ### The watcher
 
@@ -389,8 +389,9 @@ The service is a single stateless process plus a data directory, so it deploys l
 Parsed or planned, but with no behaviour behind them today:
 
 - **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.0.2. Until then, keep the service on a trusted network.
-- **TLS** (`TLS`) — terminate it at a reverse proxy for now.
-- **`OPTIMIZE_STORAGE`**, **`DEV_MODE`** — parsed, ignored.
+- **TLS** (`TLS`) — setting it refuses to start; terminate TLS at a reverse proxy for now.
+- **`OPTIMIZE_STORAGE`** — parsed, ignored; planned for a later release. Setting it logs a warning at startup.
+- **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.
 - **Swagger / OpenAPI document** — the endpoint table and examples above are the API reference for now.
 - **`URL_PREFIX`** — mount the service at the proxy root for now. Report links are relative, so a path-stripping proxy works.
 - **Emailable report**, **published Docker image**, **CI pipeline**.
