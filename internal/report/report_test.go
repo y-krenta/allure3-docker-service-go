@@ -1574,3 +1574,112 @@ func TestClearHistorySerializesWithABuildInFlight(t *testing.T) {
 
 	waitForState(t, g, "demo", StateSucceeded)
 }
+
+func TestDeleteRejectsBadProjectID(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli")
+
+	if err := g.Delete("../escape"); err == nil {
+		t.Fatal("Delete(\"../escape\") = nil, want a validation error")
+	}
+}
+
+func TestDeleteUnknownProjectSucceeds(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli")
+
+	// The caller asked for the project to be gone and it is gone. os.RemoveAll
+	// reports no error for a missing path, so neither does Delete - and the
+	// HTTP layer answers 204 rather than 404 on the strength of that.
+	if err := g.Delete("nosuch"); err != nil {
+		t.Fatalf("Delete of an absent project = %v, want nil", err)
+	}
+}
+
+func TestDeleteRemovesTheWholeProjectTree(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+	// Delete has to take out results, reports and history alike, so build a
+	// report first: a project with only a results dir would not prove it.
+	if _, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo")); err != nil {
+		t.Fatalf("setup: no report to delete: %v", err)
+	}
+
+	if err := g.Delete("demo"); err != nil {
+		t.Fatalf("Delete = %v, want nil", err)
+	}
+
+	if _, err := os.Stat(projects.ProjectDir(g.projectsDir, "demo")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("project dir still there after Delete (stat err = %v)", err)
+	}
+}
+
+func TestDeleteForgetsTheProjectStatus(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	if err := g.Start(t.Context(), "demo"); err != nil {
+		t.Fatalf("Start = %v, want nil", err)
+	}
+	waitForState(t, g, "demo", StateSucceeded)
+
+	if err := g.Delete("demo"); err != nil {
+		t.Fatalf("Delete = %v, want nil", err)
+	}
+
+	// A project recreated under the same ID must not inherit this one's
+	// StateSucceeded and report a build it never ran.
+	if st, ok := g.Status("demo"); ok {
+		t.Errorf("Status after Delete = %+v, exists=%v, want no status at all", st, ok)
+	}
+}
+
+func TestDeleteKeepsTheProjectLock(t *testing.T) {
+	g := newTestGenerator(t, "unused-cli", "demo")
+
+	before := g.lockFor("demo")
+	if err := g.Delete("demo"); err != nil {
+		t.Fatalf("Delete = %v, want nil", err)
+	}
+	after := g.lockFor("demo")
+
+	// Dropping the mutex from the registry along with the project would let a
+	// caller that arrives next miss the map and create a second mutex for the
+	// same ID - while an earlier caller still holds the first one. Both would
+	// then believe they had the project to themselves. Keeping the entry costs
+	// one mutex per ID the process has ever seen; losing the invariant costs
+	// the serialization every other operation depends on.
+	if before != after {
+		t.Error("Delete replaced the project's mutex; two callers can now hold different locks for one project")
+	}
+}
+
+func TestDeleteSerializesWithABuildInFlight(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+
+	// Simulate a build in flight by holding the project's lock directly. A
+	// Delete that ignored the lock would pull the directory out from under
+	// that build mid-rename.
+	held := g.lockFor("demo")
+	held.Lock()
+
+	done := make(chan error, 1)
+	go func() { done <- g.Delete("demo") }()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Delete returned while the project lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	held.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Delete after unlock = %v, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Delete did not proceed after the project lock was released")
+	}
+}

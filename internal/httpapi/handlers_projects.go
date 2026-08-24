@@ -104,7 +104,7 @@ func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "The default directory cannot be deleted.", http.StatusForbidden)
 		return
 	}
-	err := os.RemoveAll(filepath.Join(s.projectsDir, id))
+	err := s.reports.Delete(id)
 	if err != nil {
 		slog.Error("failed to delete project", "err", err, "project_id", id)
 		http.Error(w, msgInternalError, http.StatusInternalServerError)

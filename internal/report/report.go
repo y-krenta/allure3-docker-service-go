@@ -947,3 +947,43 @@ func (g *Generator) ClearHistory(ctx context.Context, projectID string) error {
 
 	return g.Start(ctx, projectID)
 }
+
+// Delete removes projectID's entire directory tree - results, reports and
+// history alike - and forgets the last generation status recorded for it, so
+// a project later created under the same ID does not inherit the deleted
+// project's StateSucceeded and report a build it never ran.
+//
+// It holds the project's lock for the removal, the same one Generate, Start,
+// ClearResults and ClearHistory take, so a build in progress is waited out
+// rather than having its directory pulled out from under it mid-rename.
+//
+// The lock itself is deliberately left behind in g.locks rather than deleted
+// along with the project. lockFor hands out one mutex per ID and callers hold
+// it for the whole operation; dropping the entry while a caller still holds
+// the mutex would let the next caller miss the map, create a second mutex for
+// the same project, and run concurrently with the first - destroying exactly
+// the serialization this lock exists to provide. What it costs to keep is one
+// mutex per project ID the process has ever seen, which is bytes.
+//
+// Deleting a project that is not there is not an error: the caller asked for
+// it gone and it is gone. os.RemoveAll reports no error for a missing path,
+// so this needs no case of its own.
+func (g *Generator) Delete(projectID string) error {
+	if err := projects.ValidateProjectID(projectID); err != nil {
+		return err
+	}
+
+	mu := g.lockFor(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if err := os.RemoveAll(projects.ProjectDir(g.projectsDir, projectID)); err != nil {
+		return fmt.Errorf("deleting project directory: %w", err)
+	}
+
+	g.mu.Lock()
+	delete(g.statuses, projectID)
+	g.mu.Unlock()
+
+	return nil
+}

@@ -217,6 +217,35 @@ func TestDeleteProject(t *testing.T) {
 			t.Fatalf("status = %d, want %d", w.Code, http.StatusNoContent)
 		}
 	})
+
+	t.Run("removes through the generator, not behind its back", func(t *testing.T) {
+		gen := &stubGenerator{}
+		s := newStubServer(gen)
+
+		w := callWithPath(s.deleteProject, http.MethodDelete, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNoContent, w.Body)
+		}
+		// Removing the tree here directly would leave the project's lock
+		// untaken, so a build already in flight would have its directory
+		// pulled out from under it mid-rename. The generator owns that lock
+		// and is the only way to hold it.
+		if len(gen.deletedWith) != 1 || gen.deletedWith[0] != "demo" {
+			t.Errorf("Delete called with %v, want exactly one call for %q", gen.deletedWith, "demo")
+		}
+	})
+
+	t.Run("a failed removal answers 500", func(t *testing.T) {
+		gen := &stubGenerator{deleteErr: errors.New("boom")}
+		s := newStubServer(gen)
+
+		w := callWithPath(s.deleteProject, http.MethodDelete, "/projects/demo", nil, map[string]string{"id": "demo"})
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+		}
+	})
 }
 
 func TestClearResults(t *testing.T) {

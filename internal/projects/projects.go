@@ -57,6 +57,11 @@ func LatestReportDir(baseDir, projectID string) string {
 	return filepath.Join(ReportsDir(baseDir, projectID), "latest")
 }
 
+// ProjectDir returns the root of a single project's data: <baseDir>/<projectID>.
+func ProjectDir(baseDir, projectID string) string {
+	return filepath.Join(baseDir, projectID)
+}
+
 // TmpRoot returns the path where a project's in-progress report builds are
 // staged: <baseDir>/<projectID>/.tmp. It deliberately sits beside ReportsDir
 // rather than inside it, so half-built reports are invisible to anything

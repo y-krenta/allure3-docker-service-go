@@ -26,6 +26,7 @@ type stubGenerator struct {
 	clearErr        error // returned by ClearResults
 	clearHistoryErr error // returned by ClearHistory
 	exportErr       error // returned by ExportLatest
+	deleteErr       error // returned by Delete
 
 	status    report.Status // returned by Status
 	hasStatus bool
@@ -39,6 +40,7 @@ type stubGenerator struct {
 	clearedWith        []string // project IDs ClearResults was called with, in order
 	clearedHistoryWith []string // project IDs ClearHistory was called with, in order
 	exportedWith       []string // project IDs ExportLatest was called with, in order
+	deletedWith        []string // project IDs Delete was called with, in order
 }
 
 func (g *stubGenerator) Start(_ context.Context, projectID string) error {
@@ -58,6 +60,11 @@ func (g *stubGenerator) ClearResults(projectID string) error {
 func (g *stubGenerator) ClearHistory(_ context.Context, projectID string) error {
 	g.clearedHistoryWith = append(g.clearedHistoryWith, projectID)
 	return g.clearHistoryErr
+}
+
+func (g *stubGenerator) Delete(projectID string) error {
+	g.deletedWith = append(g.deletedWith, projectID)
+	return g.deleteErr
 }
 
 func (g *stubGenerator) ExportLatest(projectID string, w io.Writer) error {

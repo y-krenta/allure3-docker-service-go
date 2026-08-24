@@ -30,6 +30,10 @@ type reportGenerator interface {
 	// then starts a fresh build under the same per-project lock.
 	ClearHistory(ctx context.Context, projectID string) error
 
+	// Delete removes projectID's directory tree, under the same per-project
+	// lock Start/Generate use.
+	Delete(projectID string) error
+
 	// ExportLatest streams projectID's published report into w as a zip
 	// archive, holding the same per-project lock. It takes an io.Writer
 	// rather than the ResponseWriter so the report package stays free of

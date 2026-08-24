@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
+	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
 // uploadFile is one part of a multipart body built by multipartBody.
@@ -62,9 +63,12 @@ func newTestServer(t *testing.T, projectIDs ...string) (*Server, string) {
 		}
 	}
 
-	// nil generator: these tests never reach a report endpoint, and a nil
-	// interface panics loudly if one ever does.
-	return NewServer(dir, nil, RuntimeConfig{}, ""), dir
+	// A real Generator rooted at the same dir, not a stub: deleteProject goes
+	// through it to take the project's lock, and these tests assert on what
+	// actually happened to the directory afterwards. The CLI name is never
+	// resolved because nothing here builds a report - only Generate and
+	// Version shell out.
+	return NewServer(dir, report.New(dir, "unused-cli", 0), RuntimeConfig{}, ""), dir
 }
 
 // do sends one request to sendResults and returns the recorded response.
