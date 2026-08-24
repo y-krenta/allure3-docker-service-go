@@ -1,14 +1,6 @@
 services:
   allure-service:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-      args:
-        # Allure version pin. Matches the default in the Dockerfile; kept here
-        # as well so a version bump is visible in the same place as the rest of
-        # the deployment.
-        ALLURE_VERSION: 3.15.0
-    image: allure3-service:0.0.1
+    image: ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
     restart: unless-stopped
     # docker stop allows 10 seconds before SIGKILL by default. Raised to 30 so
     # the service's own shutdownTimeout (25s) fits inside it: uploads and
