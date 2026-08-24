@@ -26,8 +26,15 @@ import (
 // deployment will not come up is exactly what stderr holds. It is not
 // truncated as runAllure truncates its own: --version prints a line, not the
 // megabytes a failing build can produce.
+//
+// cmd.WaitDelay is set so a CLI that hangs is still bounded by ctx in
+// practice, not just in principle: cmd.Output captures stdout through a pipe,
+// and a killed process does not by itself make Wait() return if a grandchild
+// it spawned inherited that pipe's write end and is still holding it open.
+// See cmdTimeout for the full reasoning.
 func (g *Generator) Version(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, g.allureBin, "--version")
+	cmd.WaitDelay = cmdTimeout
 	out, err := cmd.Output()
 	if err != nil {
 		var ee *exec.ExitError

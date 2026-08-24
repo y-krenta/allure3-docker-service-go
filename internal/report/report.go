@@ -27,6 +27,22 @@ const (
 	// stop a wedged CLI from holding the project's lock forever.
 	generateTimeout = time.Minute * 10
 
+	// cmdTimeout bounds exec.Cmd.WaitDelay for every Allure CLI invocation. It
+	// is not a timeout on the command itself - ctx already is - it is the
+	// grace period Wait() gets, after ctx is done, before forcibly closing the
+	// command's I/O pipes.
+	//
+	// Without it, killing the CLI process does not necessarily unblock
+	// Wait(): stdout/stderr are relayed through an os.Pipe and a copying
+	// goroutine, and if the CLI has spawned a grandchild that inherited the
+	// write end of that pipe (Node and JVM tooling routinely do), the pipe
+	// never sees EOF even after the direct child is killed - Wait() then
+	// hangs until that grandchild exits on its own, which for a wedged
+	// process is never. WaitDelay puts a hard stop on that: once it elapses,
+	// the pipes are closed forcibly and Wait() returns regardless of what is
+	// still holding them open.
+	cmdTimeout = time.Second * 3
+
 	// maxStderrBytes caps how much of a failed CLI run's stderr is carried into
 	// the returned error. The tail is kept rather than the head: fed a
 	// malformed history file the CLI echoes the whole offending line first -
@@ -463,6 +479,13 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 // a failed build reports nothing but an exit status. A missing executable is
 // reported as an error wrapping exec.ErrNotFound, which is a deployment
 // problem rather than a problem with the results.
+//
+// cmd.WaitDelay is set for the same reason as in Version: stderr is captured
+// through a pipe, and killing the CLI when ctx expires does not by itself
+// unblock Wait() if a grandchild process is still holding that pipe's write
+// end open. Without it, a wedged CLI would keep the project's build lock
+// held in Generate long after generateTimeout should have freed it. See
+// cmdTimeout for the full reasoning.
 func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, configPath string) error {
 	cmd := exec.CommandContext(
 		ctx,
@@ -472,6 +495,7 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, configPat
 		"--output", outDir,
 		"--config", configPath,
 	)
+	cmd.WaitDelay = cmdTimeout
 	cmd.Dir = os.TempDir()
 
 	var stderr bytes.Buffer
