@@ -6,7 +6,7 @@ This is a **fork** of [`fescobar/allure-docker-service`](https://github.com/fesc
 
 Each release ships one pinned version of the Allure 3 CLI, and the service's own version is independent of it. The release notes name the Allure version that release was built with; a running instance reports both at [`GET /version`](#info-endpoints), and the pin itself is the `ALLURE_VERSION` build arg in [`docker/Dockerfile`](docker/Dockerfile).
 
-> ⚠️ **No authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.2 — see [Not implemented yet](#not-implemented-yet).
+> ⚠️ **No authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.1 — see [Not implemented yet](#not-implemented-yet).
 
 Table of contents
 =================
@@ -421,7 +421,7 @@ The service is a single stateless process plus a data directory, so it deploys l
 
 Parsed or planned, but with no behaviour behind them today:
 
-- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.2. Until then, keep the service on a trusted network.
+- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.1. Until then, keep the service on a trusted network.
 - **TLS** (`TLS`) — setting it refuses to start; terminate TLS at a reverse proxy for now.
 - **`OPTIMIZE_STORAGE`** — parsed, ignored; planned for a later release. Setting it logs a warning at startup.
 - **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.
