@@ -6,7 +6,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -53,6 +53,7 @@ jobs:
           build-args: SERVICE_VERSION=${{ steps.meta.outputs.version }}
 
       - name: Smoke test the image
+        id: smoke
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
@@ -67,6 +68,7 @@ jobs:
           test -n "$ok"
           echo "$reported"
           echo "$reported" | grep -q "\"service_version\":\"$VERSION\""
+          echo "allure=$(printf '%s' "$reported" | jq -er .allure_version)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/build-push-action@v6
         with:
@@ -77,3 +79,19 @@ jobs:
           build-args: SERVICE_VERSION=${{ steps.meta.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Record the Allure version in the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          ALLURE: ${{ steps.smoke.outputs.allure }}
+        run: |
+          body=$(gh release view "$TAG" --json body -q .body) || {
+            echo "no release for $TAG, nothing to annotate"
+            exit 0
+          }
+          line="Ships Allure $ALLURE."
+          case "$body" in
+            *"$line"*) echo "already recorded"; exit 0 ;;
+          esac
+          printf '%s\n\n%s\n' "$body" "$line" | gh release edit "$TAG" --notes-file -
