@@ -319,24 +319,41 @@ Export streams the archive as it walks the report, holding the project's build l
 
 With the watcher off, one execution is one report:
 
-```sh
+```bash
+set -euo pipefail
 BASE=http://localhost:5050/projects/default
 
 # 1. drop the previous execution's results
-curl -sf -X DELETE $BASE/results
+curl -sf -X DELETE "$BASE/results"
 
 # 2. run your tests, producing ./allure-results
 
 # 3. upload this execution's results
-curl -sf -X POST $BASE/results $(printf -- '-F files[]=@%s ' ./allure-results/*)
+shopt -s nullglob
+upload=()
+for f in ./allure-results/*; do upload+=(-F "files[]=@$f"); done
+[ ${#upload[@]} -gt 0 ] || { echo "no results were produced"; exit 1; }
+curl -sf -X POST "$BASE/results" "${upload[@]}"
 
-# 4. build the report and wait for the outcome
-curl -sf -X POST $BASE/generation
-until [ "$(curl -sf $BASE/generation | jq -r .state)" != "running" ]; do sleep 2; done
-curl -sf $BASE/generation | jq
+# 4. build the report and wait for the outcome — 150 tries × 2s = 5 minutes
+curl -sf -X POST "$BASE/generation"
+for _ in $(seq 150); do
+  state=$(curl -sf "$BASE/generation" | jq -r .state)
+  [ "$state" = running ] || break
+  sleep 2
+done
+[ "$state" = succeeded ] || { curl -sf "$BASE/generation" | jq; exit 1; }
 ```
 
 Cleaning first is what makes a report represent exactly one execution. If the project may not exist yet, `POST /projects` first and ignore the `409`.
+
+Three details make the difference between a pipeline that reports the truth and one that looks green regardless:
+
+- **The wait is bounded.** A build that hangs, or a service restarted mid-build, would otherwise keep an unbounded `until` loop spinning until the CI job's own timeout burns the runner's budget. Size the count for your slowest report.
+- **The last line decides the job's exit code.** `POST /generation` answering `202` means the build was accepted, not that it succeeded, and `GET /generation` returns `200` even when it reports `state: "failed"` — the status read worked, only the build did not. Without that final check the step passes on a failed report. The body printed on failure carries the CLI's message in `error`.
+- **The upload builds an argument array.** Interpolating a glob into the command line splits on spaces, so it breaks as soon as the workspace path has one — `/var/lib/jenkins/workspace/My Job/allure-results` is an ordinary path. An empty `allure-results` is the other case: with `nullglob` unset it sends the literal `*` as a file name and gets a `400`, instead of saying plainly that the tests produced nothing.
+
+The sequence is the same under any CI system; what changes is only the wrapper around it. In GitHub Actions it is a `run:` step in a job whose `services:` block runs the image; in GitLab CI a `script:` with the image under `services:`; on Jenkins a `sh` step. Any runner with `bash`, `curl` and `jq` can execute the block as written.
 
 ## History and trends
 
