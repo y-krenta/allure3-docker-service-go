@@ -84,6 +84,10 @@ func main() {
 		log.Fatalf("cannot create default result dir %q: %v", pathDefaultResultDir, err)
 	}
 
+	if err := projects.CleanTmp(cfg.ProjectsDir); err != nil {
+		log.Printf("[WARN] %v", err)
+	}
+
 	historyLimit := cfg.KeepHistoryLatest
 	if !cfg.KeepHistory {
 		historyLimit = 0

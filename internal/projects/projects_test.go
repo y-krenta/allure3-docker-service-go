@@ -391,3 +391,131 @@ func TestHistoryFileStaysOutOfResults(t *testing.T) {
 		t.Errorf("HistoryFile = %q, want it outside the results dir %q", history, results)
 	}
 }
+
+func TestCleanTmp(t *testing.T) {
+	// stageTmp creates <base>/<id>/.tmp/build-1/index.html, the shape a build
+	// killed mid-flight leaves behind: a non-empty nested directory, which
+	// os.Remove would refuse to delete.
+	stageTmp := func(t *testing.T, base, id string) string {
+		t.Helper()
+		tmp := TmpRoot(base, id)
+		dir := filepath.Join(tmp, "build-1")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>stale</h1>"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		return tmp
+	}
+
+	t.Run("removes .tmp from every project", func(t *testing.T) {
+		base := t.TempDir()
+		var staged []string
+		for _, id := range []string{"alpha", "beta", "gamma"} {
+			if err := CreateDir(base, id); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			staged = append(staged, stageTmp(t, base, id))
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+
+		for _, tmp := range staged {
+			if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("%q still exists after CleanTmp (stat error = %v)", tmp, err)
+			}
+		}
+	})
+
+	t.Run("leaves results and reports untouched", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		stageTmp(t, base, "demo")
+		result := filepath.Join(ResultsDir(base, "demo"), "a-result.json")
+		if err := os.WriteFile(result, []byte("{}"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		published := filepath.Join(LatestReportDir(base, "demo"), "index.html")
+		if err := os.MkdirAll(LatestReportDir(base, "demo"), 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(published, []byte("<h1>report</h1>"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+
+		for _, path := range []string{result, published} {
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("CleanTmp removed %q: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("a project without .tmp is not an error", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+		if _, err := os.Stat(ProjectDir(base, "demo")); err != nil {
+			t.Errorf("project directory disappeared: %v", err)
+		}
+	})
+
+	t.Run("empty projects directory is not an error", func(t *testing.T) {
+		if err := CleanTmp(t.TempDir()); err != nil {
+			t.Fatalf("CleanTmp on empty root returned unexpected error: %v", err)
+		}
+	})
+
+	t.Run("skips files and directories that are not projects", func(t *testing.T) {
+		base := t.TempDir()
+		loose := filepath.Join(base, "README.txt")
+		if err := os.WriteFile(loose, []byte("not a project"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		// Uppercase and a leading dot both fail ValidateProjectID, so these
+		// directories were not created by this service. Their .tmp must
+		// survive: sweeping them would mean deleting a stranger's data.
+		foreign := []string{"NotAProject", ".hidden"}
+		var kept []string
+		for _, name := range foreign {
+			dir := filepath.Join(base, name, ".tmp")
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			kept = append(kept, dir)
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+
+		if _, err := os.Stat(loose); err != nil {
+			t.Errorf("CleanTmp removed a loose file: %v", err)
+		}
+		for _, dir := range kept {
+			if _, err := os.Stat(dir); err != nil {
+				t.Errorf("CleanTmp removed %q, which is not a project: %v", dir, err)
+			}
+		}
+	})
+
+	t.Run("missing projects directory reports the error", func(t *testing.T) {
+		err := CleanTmp(filepath.Join(t.TempDir(), "nosuch"))
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("CleanTmp error = %v, want it to wrap fs.ErrNotExist", err)
+		}
+	})
+}

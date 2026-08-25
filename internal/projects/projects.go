@@ -249,3 +249,44 @@ func ClearHistory(baseDir, projectID string) error {
 
 	return nil
 }
+
+// CleanTmp removes the .tmp staging directory of every project under baseDir.
+// It is meant to be called once at startup, and only then: it takes no locks,
+// which is safe exactly because nothing has begun building yet. Calling it
+// after the watcher or the HTTP server is up would let it delete a build's
+// staging directory out from under a running Allure process.
+//
+// Generate already clears .tmp at the start of every build, so this only
+// matters for projects that are never rebuilt: a build killed by a restart
+// leaves its half-finished report behind, and without this sweep that garbage
+// stays on disk for the life of the volume.
+//
+// Entries that are not directories, and directories whose name is not a valid
+// project ID, are skipped rather than reported - they were not created by this
+// service and are none of its business. A project whose .tmp cannot be removed
+// is logged and the sweep continues, since one project with broken permissions
+// should not stop the others from being cleaned. The returned error is
+// reserved for the one failure that stops everything, being unable to list
+// baseDir at all; a project that has no .tmp is not a failure, because
+// os.RemoveAll reports success for a path that does not exist.
+func CleanTmp(baseDir string) error {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return fmt.Errorf("unable to read projects directory %q: %w", baseDir, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if err := ValidateProjectID(entry.Name()); err != nil {
+			continue
+		}
+
+		path := TmpRoot(baseDir, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			log.Printf("unable to remove temporary directory %q: %v", path, err)
+		}
+	}
+
+	return nil
+}
