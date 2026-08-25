@@ -65,17 +65,33 @@ type RuntimeConfig struct {
 // under which per-project results/reports are stored, and the generator that
 // the report endpoints drive.
 type Server struct {
-	projectsDir   string
-	reports       reportGenerator
-	cfg           RuntimeConfig
-	allureVersion string
+	projectsDir string
+	reports     reportGenerator
+	cfg         RuntimeConfig
+	versions    Versions
+}
+
+// Versions carries the two version strings the meta endpoints report. It
+// exists so that they cannot be swapped: as two string parameters they are
+// interchangeable to the compiler, and a transposition would surface only as a
+// running service telling a human the wrong two numbers.
+//
+// They arrive from different places, and neither can change while the process
+// runs. Allure is asked of the CLI itself at startup - getVersion explains why
+// that beats trusting the version the image was built with. Service is stamped
+// into the binary at link time with -X main.serviceVersion, and is "dev" in
+// every build that does not pass it.
+type Versions struct {
+	Allure  string
+	Service string
 }
 
 // NewServer builds a Server that resolves project storage under projectsDir,
 // starts report builds through reports, and answers the meta endpoints with
-// cfg and allureVersion. Both of the last two are read once in main - one from
-// the environment, one from the CLI - and are immutable for the life of the
-// process.
-func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig, allureVersion string) *Server {
-	return &Server{projectsDir: projectsDir, reports: reports, cfg: cfg, allureVersion: allureVersion}
+// cfg and versions. Both of the last two are assembled once in main, from
+// three sources that cannot change afterwards - the environment, the Allure
+// CLI and a string the linker stamped into this binary - and are immutable for
+// the life of the process.
+func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig, versions Versions) *Server {
+	return &Server{projectsDir: projectsDir, reports: reports, cfg: cfg, versions: versions}
 }

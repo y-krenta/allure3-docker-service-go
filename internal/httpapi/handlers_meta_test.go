@@ -25,7 +25,7 @@ func TestGetConfig(t *testing.T) {
 			KeepHistory:       true,
 			KeepHistoryLatest: 60,
 			CheckResultsEvery: 30 * time.Second,
-		}, "")
+		}, Versions{})
 
 		w := httptest.NewRecorder()
 		s.getConfig(w, httptest.NewRequest(http.MethodGet, "/config", nil))
@@ -72,7 +72,7 @@ func TestGetConfig(t *testing.T) {
 		// plain run. With omitempty on the tags they would vanish from
 		// the body, and a client could not tell "history is off" from
 		// "this service is too old to say".
-		s := NewServer("unused-dir", nil, RuntimeConfig{}, "")
+		s := NewServer("unused-dir", nil, RuntimeConfig{}, Versions{})
 
 		w := httptest.NewRecorder()
 		s.getConfig(w, httptest.NewRequest(http.MethodGet, "/config", nil))
@@ -93,7 +93,7 @@ func TestGetConfig(t *testing.T) {
 		// getConfig is reached through Routes here, not called directly:
 		// the handler can be perfect and the endpoint still 404 if the
 		// pattern is wrong or the method is not GET.
-		s := NewServer("unused-dir", nil, RuntimeConfig{KeepHistoryLatest: 7}, "")
+		s := NewServer("unused-dir", nil, RuntimeConfig{KeepHistoryLatest: 7}, Versions{})
 
 		w := httptest.NewRecorder()
 		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config", nil))
@@ -113,10 +113,22 @@ func TestGetConfig(t *testing.T) {
 
 func TestGetVersion(t *testing.T) {
 	// Same reason as TestGetConfig: the body is read as a map, not decoded
-	// back into versionResponse, so the assertion is on the key that ships
+	// back into versionResponse, so the assertion is on the keys that ship
 	// rather than on the struct agreeing with itself.
-	t.Run("reports the version the server was built with", func(t *testing.T) {
-		s := NewServer("unused-dir", nil, RuntimeConfig{}, "3.14.3")
+	//
+	// The two values differ on purpose. Both fields are strings, so a
+	// handler that read s.versions.Allure into each of them - or a Versions
+	// built with its two arguments transposed - would satisfy any test that
+	// gave them the same value.
+	const (
+		allureVersion  = "3.14.3"
+		serviceVersion = "0.0.2-test"
+	)
+
+	versions := Versions{Allure: allureVersion, Service: serviceVersion}
+
+	t.Run("reports both versions the server was built with", func(t *testing.T) {
+		s := NewServer("unused-dir", nil, RuntimeConfig{}, versions)
 
 		w := httptest.NewRecorder()
 		s.getVersion(w, httptest.NewRequest(http.MethodGet, "/version", nil))
@@ -132,14 +144,39 @@ func TestGetVersion(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("decoding body %q: %v", w.Body.String(), err)
 		}
-		if len(got) != 1 {
-			t.Errorf("body has %d keys, want 1: %s", len(got), w.Body.String())
+
+		keys := make([]string, 0, len(got))
+		for k := range got {
+			keys = append(keys, k)
 		}
+		slices.Sort(keys)
+		if want := []string{"allure_version", "service_version"}; !slices.Equal(keys, want) {
+			t.Errorf("keys = %v, want %v", keys, want)
+		}
+
 		// Asserted whole, not by prefix: main trims the trailing newline
 		// the CLI prints, and a version still carrying it would satisfy
 		// a prefix or contains check while being wrong on the wire.
-		if got["version"] != "3.14.3" {
-			t.Errorf("version = %v, want 3.14.3", got["version"])
+		if got["allure_version"] != allureVersion {
+			t.Errorf("allure_version = %v, want %v", got["allure_version"], allureVersion)
+		}
+		if got["service_version"] != serviceVersion {
+			t.Errorf("service_version = %v, want %v", got["service_version"], serviceVersion)
+		}
+	})
+
+	t.Run("empty versions are published, not omitted", func(t *testing.T) {
+		// Nothing in this package can produce an empty version today, but
+		// omitempty on either tag would make an unstamped build - or a
+		// future source of these strings that can fail - indistinguishable
+		// from a service too old to report that field at all.
+		s := NewServer("unused-dir", nil, RuntimeConfig{}, Versions{})
+
+		w := httptest.NewRecorder()
+		s.getVersion(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+
+		if got := strings.TrimSpace(w.Body.String()); got != `{"allure_version":"","service_version":""}` {
+			t.Errorf("body = %s, want both keys with empty values", got)
 		}
 	})
 
@@ -147,7 +184,7 @@ func TestGetVersion(t *testing.T) {
 		// Reached through Routes, so a pattern registered under the wrong
 		// prefix - /projects/version, say, which also collides with the
 		// {id} wildcard - shows up here rather than in production.
-		s := NewServer("unused-dir", nil, RuntimeConfig{}, "3.14.3")
+		s := NewServer("unused-dir", nil, RuntimeConfig{}, versions)
 
 		w := httptest.NewRecorder()
 		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
@@ -155,8 +192,9 @@ func TestGetVersion(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body %q)", w.Code, http.StatusOK, w.Body.String())
 		}
-		if got := strings.TrimSpace(w.Body.String()); got != `{"version":"3.14.3"}` {
-			t.Errorf("body = %s, want {\"version\":\"3.14.3\"}", got)
+		want := `{"allure_version":"3.14.3","service_version":"0.0.2-test"}`
+		if got := strings.TrimSpace(w.Body.String()); got != want {
+			t.Errorf("body = %s, want %s", got, want)
 		}
 	})
 }

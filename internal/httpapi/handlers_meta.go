@@ -14,12 +14,19 @@ type configResponse struct {
 	CheckResultsEverySeconds int  `json:"check_results_every_seconds"`
 }
 
-// versionResponse is the JSON body returned by getVersion. A bare JSON string
-// would be a valid body too, but an object leaves room for the service's own
-// version beside the CLI's, and matches the shape every other endpoint here
-// answers with.
+// versionResponse is the JSON body returned by getVersion. It carries both
+// versions that describe a running container: the Allure CLI that builds the
+// reports, and the service that drives it.
+//
+// Each key names what it holds. In 0.0.1 the endpoint answered
+// {"version": "3.15.0"}, where version meant the CLI's - and keeping that key
+// while adding service_version beside it would have frozen the vaguer name
+// onto somebody else's version for good. Renaming it breaks any client of
+// 0.0.1 that read version, a debt worth paying while the release is days old
+// rather than years.
 type versionResponse struct {
-	Version string `json:"version"`
+	AllureVersion  string `json:"allure_version"`
+	ServiceVersion string `json:"service_version"`
 }
 
 // getConfig handles GET /config. It answers with the settings the service is
@@ -43,23 +50,31 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, resp)
 }
 
-// getVersion handles GET /version. It reports the version of the Allure CLI
-// this process builds reports with - asked of the binary itself at startup
-// rather than read from an ALLURE_VERSION file, which describes what the image
-// was built with and can disagree with what is actually installed.
+// getVersion handles GET /version. It reports two versions: the Allure CLI
+// this process builds reports with, and the service itself.
 //
-// The value is read once in main and kept in memory, because it cannot change
-// while the process runs: the binary is resolved at startup and never
-// re-resolved. Shelling out per request would buy nothing and cost about
-// 0.4s of JVM startup each time, which is also a free amplifier for anyone
-// pointing a load generator at this endpoint.
+// The CLI's is asked of the binary at startup rather than read from an
+// ALLURE_VERSION file, which describes what the image was built with and can
+// disagree with what is actually installed. The service's is stamped into this
+// binary at link time, which is the same argument from the other side: a
+// version living anywhere but inside the executable can drift away from the
+// code it claims to name.
+//
+// Both are read once in main and kept in memory, because neither can change
+// while the process runs: the CLI is resolved at startup and never
+// re-resolved, and the stamped string is part of the executable. Shelling out
+// per request would buy nothing and cost about 0.2s of Node startup each time,
+// which is also a free amplifier for anyone pointing a load generator at this
+// endpoint.
 //
 // Responds 200 with versionResponse as JSON. There is no failure branch: a CLI
-// that could not answer --version stopped the service at startup, so by the
-// time this handler can be reached the string is there.
+// that could not answer --version stopped the service at startup, and the
+// service's own version is a compile-time value in all but name, so by the
+// time this handler can be reached both strings are there.
 func (s *Server) getVersion(w http.ResponseWriter, r *http.Request) {
 	resp := versionResponse{
-		Version: s.allureVersion,
+		AllureVersion:  s.versions.Allure,
+		ServiceVersion: s.versions.Service,
 	}
 	writeJSON(w, r, resp)
 }

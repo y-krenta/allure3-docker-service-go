@@ -69,7 +69,7 @@ func newTestServer(t *testing.T, projectIDs ...string) (*Server, string) {
 	// actually happened to the directory afterwards. The CLI name is never
 	// resolved because nothing here builds a report - only Generate and
 	// Version shell out.
-	return NewServer(dir, report.New(dir, "unused-cli", 0), RuntimeConfig{}, ""), dir
+	return NewServer(dir, report.New(dir, "unused-cli", 0), RuntimeConfig{}, Versions{}), dir
 }
 
 // do sends one request to sendResults and returns the recorded response.
