@@ -29,6 +29,7 @@ Table of contents
 * [Opening the report](#opening-the-report)
 * [Deploying](#deploying)
    * [File permissions](#file-permissions)
+   * [Day-to-day operations](#day-to-day-operations)
    * [Updating](#updating)
    * [Kubernetes](#kubernetes)
 * [Known issues](#known-issues)
@@ -391,6 +392,30 @@ mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects
 ```
 
 Docker Desktop on macOS and Windows handles ownership for you. Do not work around this by running the container as `root`.
+
+### Day-to-day operations
+
+Everything below runs from the directory holding your `docker-compose.yml`:
+
+```sh
+docker compose logs -f allure-service   # follow the log
+docker compose ps                       # state, including the healthcheck
+docker compose restart allure-service   # restart
+docker compose down                     # stop; the reports on disk stay
+
+du -sh .data/projects                   # total disk used
+du -sh .data/projects/*                 # per project
+```
+
+Storage grows with `KEEP_HISTORY_LATEST` x the size of one run x the number of projects, and the service enforces no ceiling of its own: watch `du`, lower the retention, or delete projects you no longer need. Filling the disk under the mount is the one failure mode that takes the whole service down.
+
+Back up the projects root with the service stopped, so a build in flight cannot be captured half-written:
+
+```sh
+docker compose stop
+tar czf allure-backup-$(date +%F).tgz -C /path/to/storage projects
+docker compose start
+```
 
 ### Updating
 
