@@ -202,10 +202,12 @@ curl -s http://localhost:5050/config
 # {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
 
 curl -s http://localhost:5050/version
-# {"version":"3.15.0"}
+# {"allure_version":"3.15.0","service_version":"0.0.2"}
 ```
 
-`/config` reports the subset of settings that actually influence behaviour; `/version` is read from the binary itself (`allure --version`) at startup, not from a build-time file, so it cannot drift from what is installed.
+`/config` reports the subset of settings that actually influence behaviour. `/version` answers with both versions that describe a running container: `allure_version` is asked of the CLI itself (`allure --version`) at startup rather than read from a build-time file, and `service_version` is stamped into the binary when the image is built — a source build reports `dev`.
+
+> **Breaking change in 0.0.2.** This endpoint used to answer `{"version":"3.15.0"}`, where `version` meant the Allure CLI's. Both keys are now named after what they hold; a client that read `version` has to read `allure_version` instead.
 
 ### Project endpoints
 
