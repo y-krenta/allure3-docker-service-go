@@ -1,8 +1,10 @@
 package projects
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,6 +411,17 @@ func TestCleanTmp(t *testing.T) {
 		return tmp
 	}
 
+	// captureLog redirects the standard logger into a buffer for the length of
+	// one subtest. CleanTmp reports a project it could not clean by logging,
+	// so the log is the only place that behaviour is observable.
+	captureLog := func(t *testing.T) *bytes.Buffer {
+		t.Helper()
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		t.Cleanup(func() { log.SetOutput(os.Stderr) })
+		return &buf
+	}
+
 	t.Run("removes .tmp from every project", func(t *testing.T) {
 		base := t.TempDir()
 		var staged []string
@@ -417,6 +430,13 @@ func TestCleanTmp(t *testing.T) {
 				t.Fatalf("setup: %v", err)
 			}
 			staged = append(staged, stageTmp(t, base, id))
+		}
+		// ReadDir returns entries sorted by name, and an uppercase R sorts
+		// before a lowercase a: this file is seen before any project, so a
+		// sweep that stops at the first non-project instead of skipping it
+		// cleans nothing at all.
+		if err := os.WriteFile(filepath.Join(base, "README.txt"), []byte("not a project"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
 		}
 
 		if err := CleanTmp(base); err != nil {
@@ -488,6 +508,12 @@ func TestCleanTmp(t *testing.T) {
 		// Uppercase and a leading dot both fail ValidateProjectID, so these
 		// directories were not created by this service. Their .tmp must
 		// survive: sweeping them would mean deleting a stranger's data.
+		// A regular file whose name is a valid project ID: the name passes
+		// ValidateProjectID, so only the IsDir check keeps CleanTmp from
+		// trying to remove <base>/alpha/.tmp and logging about it.
+		if err := os.WriteFile(filepath.Join(base, "alpha"), []byte("not a project"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
 		foreign := []string{"NotAProject", ".hidden"}
 		var kept []string
 		for _, name := range foreign {
@@ -498,10 +524,14 @@ func TestCleanTmp(t *testing.T) {
 			kept = append(kept, dir)
 		}
 
+		logged := captureLog(t)
 		if err := CleanTmp(base); err != nil {
 			t.Fatalf("CleanTmp returned unexpected error: %v", err)
 		}
 
+		if logged.Len() != 0 {
+			t.Errorf("CleanTmp logged about a non-project entry: %s", logged.String())
+		}
 		if _, err := os.Stat(loose); err != nil {
 			t.Errorf("CleanTmp removed a loose file: %v", err)
 		}
@@ -509,6 +539,44 @@ func TestCleanTmp(t *testing.T) {
 			if _, err := os.Stat(dir); err != nil {
 				t.Errorf("CleanTmp removed %q, which is not a project: %v", dir, err)
 			}
+		}
+	})
+
+	t.Run("a project that cannot be cleaned does not stop the sweep", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		base := t.TempDir()
+		for _, id := range []string{"alpha", "beta"} {
+			if err := CreateDir(base, id); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			stageTmp(t, base, id)
+		}
+		// Removing .tmp means unlinking an entry from its parent, so it is the
+		// project directory that has to lose write permission, not .tmp
+		// itself. alpha sorts first, so the failure happens before beta is
+		// reached. Restored in cleanup, or t.TempDir cannot delete the tree.
+		locked := ProjectDir(base, "alpha")
+		if err := os.Chmod(locked, 0500); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(locked, 0755); err != nil {
+				t.Errorf("cleanup: restoring permissions on %q: %v", locked, err)
+			}
+		})
+
+		logged := captureLog(t)
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned an error for one unremovable project: %v", err)
+		}
+
+		if !strings.Contains(logged.String(), TmpRoot(base, "alpha")) {
+			t.Errorf("CleanTmp did not log the project it could not clean, log = %q", logged.String())
+		}
+		if _, err := os.Stat(TmpRoot(base, "beta")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("beta was not cleaned after alpha failed (stat error = %v)", err)
 		}
 	})
 
