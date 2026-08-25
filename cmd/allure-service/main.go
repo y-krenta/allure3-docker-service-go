@@ -34,6 +34,19 @@ import (
 // long is worse than cutting them off.
 const shutdownTimeout = 25 * time.Second
 
+// serviceVersion is what GET /version reports as this build's own version.
+// A release replaces it at link time with
+// -ldflags="-X main.serviceVersion=<version>"; every other build - go run, a
+// plain go build, the tests - keeps "dev".
+//
+// It is a var rather than a const deliberately. -X patches a string variable
+// in the linked binary, and a constant has nothing to patch: the compiler has
+// already copied its value into every use, so making this const would leave
+// every release quietly reporting "dev". A typo in the flag's path fails the
+// same silent way, which is why the release workflow asks the running
+// container what version it believes it is.
+var serviceVersion = "dev"
+
 func main() {
 	cfg := config.Load()
 	if cfg.SecurityEnable {
@@ -71,6 +84,10 @@ func main() {
 		log.Fatalf("cannot create default result dir %q: %v", pathDefaultResultDir, err)
 	}
 
+	if err := projects.CleanTmp(cfg.ProjectsDir); err != nil {
+		log.Printf("[WARN] %v", err)
+	}
+
 	historyLimit := cfg.KeepHistoryLatest
 	if !cfg.KeepHistory {
 		historyLimit = 0
@@ -98,7 +115,7 @@ func main() {
 		KeepHistory:       cfg.KeepHistory,
 		KeepHistoryLatest: cfg.KeepHistoryLatest,
 		CheckResultsEvery: cfg.CheckResultsInterval,
-	}, allureVersion)
+	}, httpapi.Versions{Allure: allureVersion, Service: serviceVersion})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

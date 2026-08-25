@@ -1,8 +1,10 @@
 package projects
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -390,4 +392,198 @@ func TestHistoryFileStaysOutOfResults(t *testing.T) {
 	if strings.HasPrefix(history, results) {
 		t.Errorf("HistoryFile = %q, want it outside the results dir %q", history, results)
 	}
+}
+
+func TestCleanTmp(t *testing.T) {
+	// stageTmp creates <base>/<id>/.tmp/build-1/index.html, the shape a build
+	// killed mid-flight leaves behind: a non-empty nested directory, which
+	// os.Remove would refuse to delete.
+	stageTmp := func(t *testing.T, base, id string) string {
+		t.Helper()
+		tmp := TmpRoot(base, id)
+		dir := filepath.Join(tmp, "build-1")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>stale</h1>"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		return tmp
+	}
+
+	// captureLog redirects the standard logger into a buffer for the length of
+	// one subtest. CleanTmp reports a project it could not clean by logging,
+	// so the log is the only place that behaviour is observable.
+	captureLog := func(t *testing.T) *bytes.Buffer {
+		t.Helper()
+		var buf bytes.Buffer
+		log.SetOutput(&buf)
+		t.Cleanup(func() { log.SetOutput(os.Stderr) })
+		return &buf
+	}
+
+	t.Run("removes .tmp from every project", func(t *testing.T) {
+		base := t.TempDir()
+		var staged []string
+		for _, id := range []string{"alpha", "beta", "gamma"} {
+			if err := CreateDir(base, id); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			staged = append(staged, stageTmp(t, base, id))
+		}
+		// ReadDir returns entries sorted by name, and an uppercase R sorts
+		// before a lowercase a: this file is seen before any project, so a
+		// sweep that stops at the first non-project instead of skipping it
+		// cleans nothing at all.
+		if err := os.WriteFile(filepath.Join(base, "README.txt"), []byte("not a project"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+
+		for _, tmp := range staged {
+			if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("%q still exists after CleanTmp (stat error = %v)", tmp, err)
+			}
+		}
+	})
+
+	t.Run("leaves results and reports untouched", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		stageTmp(t, base, "demo")
+		result := filepath.Join(ResultsDir(base, "demo"), "a-result.json")
+		if err := os.WriteFile(result, []byte("{}"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		published := filepath.Join(LatestReportDir(base, "demo"), "index.html")
+		if err := os.MkdirAll(LatestReportDir(base, "demo"), 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		if err := os.WriteFile(published, []byte("<h1>report</h1>"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+
+		for _, path := range []string{result, published} {
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("CleanTmp removed %q: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("a project without .tmp is not an error", func(t *testing.T) {
+		base := t.TempDir()
+		if err := CreateDir(base, "demo"); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+		if _, err := os.Stat(ProjectDir(base, "demo")); err != nil {
+			t.Errorf("project directory disappeared: %v", err)
+		}
+	})
+
+	t.Run("empty projects directory is not an error", func(t *testing.T) {
+		if err := CleanTmp(t.TempDir()); err != nil {
+			t.Fatalf("CleanTmp on empty root returned unexpected error: %v", err)
+		}
+	})
+
+	t.Run("skips files and directories that are not projects", func(t *testing.T) {
+		base := t.TempDir()
+		loose := filepath.Join(base, "README.txt")
+		if err := os.WriteFile(loose, []byte("not a project"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		// Uppercase and a leading dot both fail ValidateProjectID, so these
+		// directories were not created by this service. Their .tmp must
+		// survive: sweeping them would mean deleting a stranger's data.
+		// A regular file whose name is a valid project ID: the name passes
+		// ValidateProjectID, so only the IsDir check keeps CleanTmp from
+		// trying to remove <base>/alpha/.tmp and logging about it.
+		if err := os.WriteFile(filepath.Join(base, "alpha"), []byte("not a project"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		foreign := []string{"NotAProject", ".hidden"}
+		var kept []string
+		for _, name := range foreign {
+			dir := filepath.Join(base, name, ".tmp")
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			kept = append(kept, dir)
+		}
+
+		logged := captureLog(t)
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned unexpected error: %v", err)
+		}
+
+		if logged.Len() != 0 {
+			t.Errorf("CleanTmp logged about a non-project entry: %s", logged.String())
+		}
+		if _, err := os.Stat(loose); err != nil {
+			t.Errorf("CleanTmp removed a loose file: %v", err)
+		}
+		for _, dir := range kept {
+			if _, err := os.Stat(dir); err != nil {
+				t.Errorf("CleanTmp removed %q, which is not a project: %v", dir, err)
+			}
+		}
+	})
+
+	t.Run("a project that cannot be cleaned does not stop the sweep", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory permissions")
+		}
+		base := t.TempDir()
+		for _, id := range []string{"alpha", "beta"} {
+			if err := CreateDir(base, id); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			stageTmp(t, base, id)
+		}
+		// Removing .tmp means unlinking an entry from its parent, so it is the
+		// project directory that has to lose write permission, not .tmp
+		// itself. alpha sorts first, so the failure happens before beta is
+		// reached. Restored in cleanup, or t.TempDir cannot delete the tree.
+		locked := ProjectDir(base, "alpha")
+		if err := os.Chmod(locked, 0500); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(locked, 0755); err != nil {
+				t.Errorf("cleanup: restoring permissions on %q: %v", locked, err)
+			}
+		})
+
+		logged := captureLog(t)
+		if err := CleanTmp(base); err != nil {
+			t.Fatalf("CleanTmp returned an error for one unremovable project: %v", err)
+		}
+
+		if !strings.Contains(logged.String(), TmpRoot(base, "alpha")) {
+			t.Errorf("CleanTmp did not log the project it could not clean, log = %q", logged.String())
+		}
+		if _, err := os.Stat(TmpRoot(base, "beta")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("beta was not cleaned after alpha failed (stat error = %v)", err)
+		}
+	})
+
+	t.Run("missing projects directory reports the error", func(t *testing.T) {
+		err := CleanTmp(filepath.Join(t.TempDir(), "nosuch"))
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("CleanTmp error = %v, want it to wrap fs.ErrNotExist", err)
+		}
+	})
 }

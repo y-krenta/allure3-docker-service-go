@@ -4,7 +4,9 @@ A web service that stores and serves **Allure 3** test reports with the history 
 
 This is a **fork** of [`fescobar/allure-docker-service`](https://github.com/fescobar/allure-docker-service), rewritten from **Python/Flask + Allure 2 (Java)** to **Go + Allure 3 (Node.js)**. See [Differences from upstream](#differences-from-upstream).
 
-> ⚠️ **Status: 0.0.1, no authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.0.2 — see [Not implemented yet](#not-implemented-yet).
+Each release ships one pinned version of the Allure 3 CLI, and the service's own version is independent of it. The release notes name the Allure version that release was built with; a running instance reports both at [`GET /version`](#info-endpoints), and the pin itself is the `ALLURE_VERSION` build arg in [`docker/Dockerfile`](docker/Dockerfile).
+
+> ⚠️ **No authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.2 — see [Not implemented yet](#not-implemented-yet).
 
 Table of contents
 =================
@@ -58,7 +60,7 @@ Pin an exact version in production and move it deliberately; `latest` exists for
 
 ### Docker Compose
 
-The repository ships a ready [`docker-compose.yml`](docker-compose.yml):
+The repository ships a ready [`docker-compose.yml`](docker-compose.yml), pinned to an exact release — copy that one for a real deployment. The block below is the same thing on `latest`, for a first look:
 
 ```sh
 mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects   # Linux only, see File permissions
@@ -69,7 +71,7 @@ docker compose logs -f allure-service
 ```yaml
 services:
   allure-service:
-    image: ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
+    image: ghcr.io/y-krenta/allure3-docker-service-go:latest
     restart: unless-stopped
     environment:
       KEEP_HISTORY: 1
@@ -89,14 +91,14 @@ Mount the **projects root as a whole**. Publishing a report renames a directory 
 docker run -d -p 5050:5050 \
            -e KEEP_HISTORY=1 -e KEEP_HISTORY_LATEST=60 \
            -v ${PWD}/.data/projects:/app/projects \
-           ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
+           ghcr.io/y-krenta/allure3-docker-service-go:latest
 ```
 
 On Windows `${PWD}` only works in [Git Bash](https://git-scm.com/downloads) (`-v "/$(pwd)/.data/projects:/app/projects"`); in PowerShell/CMD use an absolute path.
 
 ### Running from source
 
-Go 1.26 and the [Allure 3](https://allurereport.org/docs/) CLI on `PATH` are required:
+The [Allure 3](https://allurereport.org/docs/) CLI on `PATH` is required:
 
 ```sh
 STATIC_CONTENT_PROJECTS="$PWD/.local/projects" go run ./cmd/allure-service
@@ -170,7 +172,7 @@ Do not modify a project's directory structure by hand.
 
 ## HTTP API
 
-Base URL in the examples is `http://localhost:5050`. There is no `/allure-docker-service` prefix — this fork serves a flat, resource-oriented API. No endpoint requires authentication in 0.0.1.
+Base URL in the examples is `http://localhost:5050`. There is no `/allure-docker-service` prefix — this fork serves a flat, resource-oriented API. No endpoint requires authentication.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -202,10 +204,12 @@ curl -s http://localhost:5050/config
 # {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
 
 curl -s http://localhost:5050/version
-# {"version":"3.15.0"}
+# {"allure_version":"3.15.0","service_version":"0.0.2"}
 ```
 
-`/config` reports the subset of settings that actually influence behaviour; `/version` is read from the binary itself (`allure --version`) at startup, not from a build-time file, so it cannot drift from what is installed.
+`/config` reports the subset of settings that actually influence behaviour. `/version` answers with both versions that describe a running container: `allure_version` is asked of the CLI itself (`allure --version`) at startup rather than read from a build-time file, and `service_version` is stamped into the binary when the image is built — a source build reports `dev`.
+
+> **Breaking change in 0.0.2.** This endpoint used to answer `{"version":"3.15.0"}`, where `version` meant the Allure CLI's. Both keys are now named after what they hold; a client that read `version` has to read `allure_version` instead.
 
 ### Project endpoints
 
@@ -317,24 +321,41 @@ Export streams the archive as it walks the report, holding the project's build l
 
 With the watcher off, one execution is one report:
 
-```sh
+```bash
+set -euo pipefail
 BASE=http://localhost:5050/projects/default
 
 # 1. drop the previous execution's results
-curl -sf -X DELETE $BASE/results
+curl -sf -X DELETE "$BASE/results"
 
 # 2. run your tests, producing ./allure-results
 
 # 3. upload this execution's results
-curl -sf -X POST $BASE/results $(printf -- '-F files[]=@%s ' ./allure-results/*)
+shopt -s nullglob
+upload=()
+for f in ./allure-results/*; do upload+=(-F "files[]=@$f"); done
+[ ${#upload[@]} -gt 0 ] || { echo "no results were produced"; exit 1; }
+curl -sf -X POST "$BASE/results" "${upload[@]}"
 
-# 4. build the report and wait for the outcome
-curl -sf -X POST $BASE/generation
-until [ "$(curl -sf $BASE/generation | jq -r .state)" != "running" ]; do sleep 2; done
-curl -sf $BASE/generation | jq
+# 4. build the report and wait for the outcome — 150 tries × 2s = 5 minutes
+curl -sf -X POST "$BASE/generation"
+for _ in $(seq 150); do
+  state=$(curl -sf "$BASE/generation" | jq -r .state)
+  [ "$state" = running ] || break
+  sleep 2
+done
+[ "$state" = succeeded ] || { curl -sf "$BASE/generation" | jq; exit 1; }
 ```
 
 Cleaning first is what makes a report represent exactly one execution. If the project may not exist yet, `POST /projects` first and ignore the `409`.
+
+Three details make the difference between a pipeline that reports the truth and one that looks green regardless:
+
+- **The wait is bounded.** A build that hangs, or a service restarted mid-build, would otherwise keep an unbounded `until` loop spinning until the CI job's own timeout burns the runner's budget. Size the count for your slowest report.
+- **The last line decides the job's exit code.** `POST /generation` answering `202` means the build was accepted, not that it succeeded, and `GET /generation` returns `200` even when it reports `state: "failed"` — the status read worked, only the build did not. Without that final check the step passes on a failed report. The body printed on failure carries the CLI's message in `error`.
+- **The upload builds an argument array.** Interpolating a glob into the command line splits on spaces, so it breaks as soon as the workspace path has one — `/var/lib/jenkins/workspace/My Job/allure-results` is an ordinary path. An empty `allure-results` is the other case: with `nullglob` unset it sends the literal `*` as a file name and gets a `400`, instead of saying plainly that the tests produced nothing.
+
+The sequence is the same under any CI system; what changes is only the wrapper around it. In GitHub Actions it is a `run:` step in a job whose `services:` block runs the image; in GitLab CI a `script:` with the image under `services:`; on Jenkins a `sh` step. Any runner with `bash`, `curl` and `jq` can execute the block as written.
 
 ## History and trends
 
@@ -400,7 +421,7 @@ The service is a single stateless process plus a data directory, so it deploys l
 
 Parsed or planned, but with no behaviour behind them today:
 
-- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.0.2. Until then, keep the service on a trusted network.
+- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.2. Until then, keep the service on a trusted network.
 - **TLS** (`TLS`) — setting it refuses to start; terminate TLS at a reverse proxy for now.
 - **`OPTIMIZE_STORAGE`** — parsed, ignored; planned for a later release. Setting it logs a warning at startup.
 - **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.
