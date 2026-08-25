@@ -4,7 +4,9 @@ A web service that stores and serves **Allure 3** test reports with the history 
 
 This is a **fork** of [`fescobar/allure-docker-service`](https://github.com/fescobar/allure-docker-service), rewritten from **Python/Flask + Allure 2 (Java)** to **Go + Allure 3 (Node.js)**. See [Differences from upstream](#differences-from-upstream).
 
-> ⚠️ **Status: 0.0.1, no authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.2 — see [Not implemented yet](#not-implemented-yet).
+Each release ships one pinned version of the Allure 3 CLI, and the service's own version is independent of it. The release notes name the Allure version that release was built with; a running instance reports both at [`GET /version`](#info-endpoints), and the pin itself is the `ALLURE_VERSION` build arg in [`docker/Dockerfile`](docker/Dockerfile).
+
+> ⚠️ **No authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.2 — see [Not implemented yet](#not-implemented-yet).
 
 Table of contents
 =================
@@ -58,7 +60,7 @@ Pin an exact version in production and move it deliberately; `latest` exists for
 
 ### Docker Compose
 
-The repository ships a ready [`docker-compose.yml`](docker-compose.yml):
+The repository ships a ready [`docker-compose.yml`](docker-compose.yml), pinned to an exact release — copy that one for a real deployment. The block below is the same thing on `latest`, for a first look:
 
 ```sh
 mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects   # Linux only, see File permissions
@@ -69,7 +71,7 @@ docker compose logs -f allure-service
 ```yaml
 services:
   allure-service:
-    image: ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
+    image: ghcr.io/y-krenta/allure3-docker-service-go:latest
     restart: unless-stopped
     environment:
       KEEP_HISTORY: 1
@@ -89,14 +91,14 @@ Mount the **projects root as a whole**. Publishing a report renames a directory 
 docker run -d -p 5050:5050 \
            -e KEEP_HISTORY=1 -e KEEP_HISTORY_LATEST=60 \
            -v ${PWD}/.data/projects:/app/projects \
-           ghcr.io/y-krenta/allure3-docker-service-go:0.0.1
+           ghcr.io/y-krenta/allure3-docker-service-go:latest
 ```
 
 On Windows `${PWD}` only works in [Git Bash](https://git-scm.com/downloads) (`-v "/$(pwd)/.data/projects:/app/projects"`); in PowerShell/CMD use an absolute path.
 
 ### Running from source
 
-Go 1.26 and the [Allure 3](https://allurereport.org/docs/) CLI on `PATH` are required:
+The [Allure 3](https://allurereport.org/docs/) CLI on `PATH` is required:
 
 ```sh
 STATIC_CONTENT_PROJECTS="$PWD/.local/projects" go run ./cmd/allure-service
@@ -170,7 +172,7 @@ Do not modify a project's directory structure by hand.
 
 ## HTTP API
 
-Base URL in the examples is `http://localhost:5050`. There is no `/allure-docker-service` prefix — this fork serves a flat, resource-oriented API. No endpoint requires authentication in 0.0.1.
+Base URL in the examples is `http://localhost:5050`. There is no `/allure-docker-service` prefix — this fork serves a flat, resource-oriented API. No endpoint requires authentication.
 
 | Method | Path | Purpose |
 |---|---|---|
