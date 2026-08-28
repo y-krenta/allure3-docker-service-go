@@ -116,7 +116,7 @@ The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or
 
 ```
 2026/08/13 00:34:39 history limit 60
-2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.15.0)
+2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.16.0)
 2026/08/13 00:34:39 Starting server on port 5050
 ```
 
@@ -211,7 +211,7 @@ curl -s http://localhost:5050/config
 # {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
 
 curl -s http://localhost:5050/version
-# {"allure_version":"3.15.0","service_version":"0.0.2"}
+# {"allure_version":"3.16.0","service_version":"0.1.0"}
 ```
 
 `/config` reports the subset of settings that actually influence behaviour. `/version` answers with both versions that describe a running container: `allure_version` is asked of the CLI itself (`allure --version`) at startup rather than read from a build-time file, and `service_version` is stamped into the binary when the image is built — a source build reports `dev`.
