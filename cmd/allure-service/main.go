@@ -5,9 +5,11 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,6 +64,15 @@ func main() {
 		log.Printf("[WARN] DEV_MODE is set but not implemented yet; it has no effect")
 	}
 
+	baseURL := strings.TrimRight(cfg.PublicBaseURL, "/")
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		log.Fatalf("PUBLIC_BASE_URL must be an absolute URL, got %q, %v", cfg.PublicBaseURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		log.Fatalf("PUBLIC_BASE_URL must be an absolute URL, got %q", cfg.PublicBaseURL)
+	}
+
 	resolved, err := exec.LookPath(cfg.AllureBin)
 	if err != nil {
 		log.Fatalf("allure CLI not found (ALLURE_BIN=%q): %v", cfg.AllureBin, err)
@@ -93,7 +104,7 @@ func main() {
 		historyLimit = 0
 	}
 	log.Printf("history limit %d", historyLimit)
-	reports := report.New(cfg.ProjectsDir, cfg.AllureBin, historyLimit)
+	reports := report.New(cfg.ProjectsDir, cfg.AllureBin, historyLimit, baseURL)
 
 	versionCtx, cancelVersion := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelVersion()

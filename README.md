@@ -75,6 +75,7 @@ services:
     image: ghcr.io/y-krenta/allure3-docker-service-go:latest
     restart: unless-stopped
     environment:
+      PUBLIC_BASE_URL: http://allure.internal:5050   # required, the address CI and browsers reach this service at
       KEEP_HISTORY: 1
       KEEP_HISTORY_LATEST: 60
       CHECK_RESULTS_EVERY_SECONDS: 0     # 0 — watcher off, reports are built on request
@@ -90,6 +91,7 @@ Mount the **projects root as a whole**. Publishing a report renames a directory 
 
 ```sh
 docker run -d -p 5050:5050 \
+           -e PUBLIC_BASE_URL=http://allure.internal:5050 \
            -e KEEP_HISTORY=1 -e KEEP_HISTORY_LATEST=60 \
            -v ${PWD}/.data/projects:/app/projects \
            ghcr.io/y-krenta/allure3-docker-service-go:latest
@@ -102,10 +104,13 @@ On Windows `${PWD}` only works in [Git Bash](https://git-scm.com/downloads) (`-v
 The [Allure 3](https://allurereport.org/docs/) CLI on `PATH` is required:
 
 ```sh
+PUBLIC_BASE_URL=http://localhost:5050 \
 STATIC_CONTENT_PROJECTS="$PWD/.local/projects" go run ./cmd/allure-service
 ```
 
 `STATIC_CONTENT_PROJECTS` is mandatory on a dev machine: the default `/app/projects` is a container path and `MkdirAll` on it fails with `permission denied`. The directory (and the `default` project inside it) is created on start.
+
+`PUBLIC_BASE_URL` is mandatory everywhere and has no default: the service cannot guess the address it is reached at, and every report is stamped with urls built from it. It must be absolute — scheme and host — or the service exits at startup.
 
 The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or `allure --version` fails, the service exits immediately rather than discovering it on the first build:
 
@@ -132,6 +137,7 @@ All configuration is environment variables; invalid values fall back to the defa
 
 | Variable | Default | Effect |
 |---|---|---|
+| `PUBLIC_BASE_URL` | — | **Required.** Absolute public address of this service, e.g. `http://allure.internal:5050`. Report urls are built from it; a missing or relative value exits at startup |
 | `PORT` | `5050` | HTTP listen port |
 | `STATIC_CONTENT_PROJECTS` | `/app/projects` | Projects root on disk. Must be set when running outside the container |
 | `ALLURE_BIN` | `allure` | Allure CLI name or path; a bare name is looked up in `PATH` |

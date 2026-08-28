@@ -7,6 +7,11 @@ services:
     # exports in flight get to finish instead of being cut off mid-response.
     stop_grace_period: 30s
     environment:
+      # The address CI and browsers reach this service at, scheme included.
+      # Every report url is built from it and the service refuses to start
+      # without it, so compose fails here rather than baking a wrong address
+      # into reports that are already published.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set it to the address this service is reachable at, e.g. http://allure.internal:5050}
       KEEP_HISTORY: 1
       KEEP_HISTORY_LATEST: 60
       # 0 - the watcher is off, reports are built on request only.

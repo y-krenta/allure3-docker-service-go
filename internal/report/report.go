@@ -136,6 +136,7 @@ type Generator struct {
 	projectsDir  string // base directory holding every project's results and reports
 	allureBin    string // name or path of the Allure CLI executable
 	historyLimit int    // past runs kept in a project's history; 0 discards it entirely
+	baseURL      string // public address of this service, absolute and without a trailing slash; validated in main
 
 	// mu guards both maps below, and is held only for the map operation
 	// itself, never for a build: what a build holds for its whole duration is
@@ -178,11 +179,19 @@ var (
 // the feature off. There is no value here for "unlimited" - the service always
 // states a number - so a caller that forgets this argument silently disables
 // history rather than leaving it alone.
-func New(projectsDir, allureBin string, historyLimit int) *Generator {
+//
+// baseURL is the public address this service answers on, scheme and host
+// included, with no trailing slash. Every report url the generator stamps into
+// a build is built from it, and those urls have to be absolute to survive the
+// browser - see reportURLFor. Validating it is main's job, not this one's: the
+// package stays ignorant of the environment, and a bad value is a startup
+// failure rather than a report that builds and then dies in a tab.
+func New(projectsDir, allureBin string, historyLimit int, baseURL string) *Generator {
 	return &Generator{
 		projectsDir:  projectsDir,
 		allureBin:    allureBin,
 		historyLimit: historyLimit,
+		baseURL:      baseURL,
 		locks:        make(map[string]*sync.Mutex),
 		statuses:     make(map[string]Status),
 	}
@@ -377,7 +386,7 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 		return err
 	}
 
-	err = writeExecutor(pathResultDir, projectID, buildNumber)
+	err = writeExecutor(pathResultDir, projectID, g.baseURL, buildNumber)
 	if err != nil {
 		return err
 	}
@@ -389,7 +398,7 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 		return fmt.Errorf("copying history: %w", err)
 	}
 
-	path, err := writeAllureConfig(tmp, g.historyLimit, copyHistory, buildNumber)
+	path, err := writeAllureConfig(tmp, g.historyLimit, copyHistory, buildNumber, projectID, g.baseURL)
 	if err != nil {
 		return err
 	}
@@ -705,15 +714,16 @@ type allureConfig struct {
 //
 // The file carries what the command line cannot: the retention limit, the
 // history file and the plugins. buildNumber is the number the report being
-// built will be archived under, and it reaches the browser as the address the
-// trend chart links this run to - see reportURLFor.
+// built will be archived under; together with projectID and baseURL it becomes
+// the address this run is published at, which the trend chart links to and the
+// test page resolves - see reportURLFor.
 //
 // The report-url plugin is written to disk here, next to the config, rather
 // than shipped in the image. That keeps one path out of the Dockerfile, leaves
 // no case where the file is missing, and makes a build outside a container
 // behave exactly like one inside it. The plugin costs a file write per build,
 // which is nothing next to the build itself.
-func writeAllureConfig(dir string, limit int, historyPath string, buildNumber int) (string, error) {
+func writeAllureConfig(dir string, limit int, historyPath string, buildNumber int, projectID, baseURL string) (string, error) {
 	pluginPath, err := writeReportURLPlugin(dir)
 	if err != nil {
 		return "", err
@@ -727,7 +737,7 @@ func writeAllureConfig(dir string, limit int, historyPath string, buildNumber in
 			},
 			ReportURL: reportURLPlugin{
 				Import:  pluginPath,
-				Options: reportURLOptions{URL: reportURLFor(buildNumber)},
+				Options: reportURLOptions{URL: reportURLFor(baseURL, projectID, buildNumber)},
 			},
 		},
 	}
@@ -775,13 +785,27 @@ func (g *Generator) getNextBuildNumber(projectID string) (int, error) {
 	return maxNumber + 1, nil
 }
 
-// reportURLFor is the address of build number's published report, relative to
-// any other report in the same project: reports live side by side under
-// reports/, so ../7/index.html resolves from reports/latest and from any
-// archived reports/N alike. Both the executor file and the history entry are
-// stamped with it and must agree.
-func reportURLFor(buildNumber int) string {
-	return fmt.Sprintf("../%d/index.html", buildNumber)
+// reportURLFor is the absolute address of build buildNumber's published
+// report, as seen from outside the service: baseURL is the public base the
+// process was started with, and the rest mirrors the routes this service
+// serves reports on.
+//
+// It must be absolute. The url is stamped into the executor file and into
+// every history entry, and the report's own frontend feeds it to the
+// browser's URL constructor when it renders a test's history. That
+// constructor rejects a relative address by throwing, which unmounts the
+// whole report and leaves a page that no longer answers a click - a
+// relative path here is not a cosmetic difference but a dead report. Go's
+// url.Parse accepts "../7/index.html" without complaint, so a test that
+// only parses the result proves nothing; see TestReportURLForSurvivesNewURL,
+// which runs the value through the real constructor.
+//
+// baseURL arrives already validated and without a trailing slash - main
+// refuses to start otherwise - so nothing here has to defend against an
+// empty scheme or a doubled separator. Both the executor file and the
+// history entry are stamped with this and must agree.
+func reportURLFor(baseURL, projectID string, buildNumber int) string {
+	return fmt.Sprintf("%s/projects/%s/reports/%d/index.html", baseURL, projectID, buildNumber)
 }
 
 // executorFile is the slice of Allure's executor.json this service sets. All
@@ -814,7 +838,7 @@ type executorFile struct {
 // nothing meaningful to record; writeExecutor does nothing rather than write
 // a file with empty fields, which is what left the original Python service
 // writing a file so empty the CLI complained about it on stderr.
-func writeExecutor(resultsDir, projectID string, buildOrder int) error {
+func writeExecutor(resultsDir, projectID, baseURL string, buildOrder int) error {
 	if buildOrder <= 1 {
 		return nil
 	}
@@ -823,7 +847,7 @@ func writeExecutor(resultsDir, projectID string, buildOrder int) error {
 		BuildOrder: buildOrder,
 		BuildName:  fmt.Sprintf("%s #%d", projectID, buildOrder),
 		ReportName: fmt.Sprintf("%s #%d", projectID, buildOrder),
-		ReportURL:  reportURLFor(buildOrder),
+		ReportURL:  reportURLFor(baseURL, projectID, buildOrder),
 	}
 
 	data, err := json.Marshal(resp)
