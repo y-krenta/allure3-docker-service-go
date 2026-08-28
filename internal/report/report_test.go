@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,6 +150,11 @@ func readFile(t *testing.T, path string) []byte {
 // someone hardcoded on the way.
 const testHistoryLimit = 7
 
+// testBaseURL is the public address the service is configured with in tests.
+// It has to be absolute: the browser feeds every url the report carries to
+// new URL(), which throws on a relative one and takes the page down with it.
+const testBaseURL = "https://allure.example.test"
+
 // newTestGenerator returns a Generator rooted at a fresh temp dir, running the
 // given CLI, with the given projects already created and holding one result
 // file each — a project with an empty results dir is refused before any build
@@ -163,7 +169,7 @@ func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Gen
 		}
 		writeResult(t, dir, id)
 	}
-	return New(dir, allureBin, testHistoryLimit)
+	return New(dir, allureBin, testHistoryLimit, testBaseURL)
 }
 
 // writeResult drops one Allure result file into the project's results dir.
@@ -262,7 +268,7 @@ func TestEmptyResultsDirIsRefused(t *testing.T) {
 		if err := projects.CreateDir(dir, "demo"); err != nil {
 			t.Fatalf("CreateDir: %v", err)
 		}
-		return New(dir, fakeCLI(t, cliOK), testHistoryLimit)
+		return New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL)
 	}
 
 	t.Run("Generate", func(t *testing.T) {
@@ -635,7 +641,7 @@ func TestGenerateWritesTheLimitIntoTheConfig(t *testing.T) {
 func TestWriteAllureConfigKeepsAZeroLimit(t *testing.T) {
 	dir := t.TempDir()
 
-	path, err := writeAllureConfig(dir, 0, filepath.Join(dir, "history.jsonl"), 1)
+	path, err := writeAllureConfig(dir, 0, filepath.Join(dir, "history.jsonl"), 1, "demo", testBaseURL)
 	if err != nil {
 		t.Fatalf("writeAllureConfig = %v, want nil", err)
 	}
@@ -672,7 +678,7 @@ func TestWriteAllureConfigKeepsAZeroLimit(t *testing.T) {
 func TestWriteAllureConfigWiresTheReportURLPlugin(t *testing.T) {
 	dir := t.TempDir()
 
-	path, err := writeAllureConfig(dir, testHistoryLimit, filepath.Join(dir, "history.jsonl"), 4)
+	path, err := writeAllureConfig(dir, testHistoryLimit, filepath.Join(dir, "history.jsonl"), 4, "demo", testBaseURL)
 	if err != nil {
 		t.Fatalf("writeAllureConfig = %v, want nil", err)
 	}
@@ -702,9 +708,11 @@ func TestWriteAllureConfigWiresTheReportURLPlugin(t *testing.T) {
 
 	// The literal, not reportURLFor: this is the value the browser follows,
 	// and a test that computes it the same way the code does would follow the
-	// code anywhere it went.
-	if plugin.Options.URL != "../4/index.html" {
-		t.Errorf("plugin url = %q, want ../4/index.html for build 4", plugin.Options.URL)
+	// code anywhere it went. Absolute on purpose - the report hands this
+	// string to new URL(), which rejects a relative one.
+	const wantURL = testBaseURL + "/projects/demo/reports/4/index.html"
+	if plugin.Options.URL != wantURL {
+		t.Errorf("plugin url = %q, want %q for build 4", plugin.Options.URL, wantURL)
 	}
 	if plugin.Import == "" {
 		t.Fatalf("config = %s, want the plugin's import path", raw)
@@ -752,7 +760,7 @@ func TestReportURLPluginSetsTheReportURL(t *testing.T) {
 
 	harness := filepath.Join(dir, "harness.mjs")
 	body := "import Plugin from " + strconv.Quote(pluginPath) + ";\n" +
-		"const plugin = new Plugin({ url: \"../7/index.html\" });\n" +
+		"const plugin = new Plugin({ url: \"https://allure.example.test/projects/demo/reports/7/index.html\" });\n" +
 		"const context = {};\n" +
 		"await plugin.start(context);\n" +
 		"console.log(context.reportUrl);\n"
@@ -764,8 +772,65 @@ func TestReportURLPluginSetsTheReportURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("running the plugin: %v\n%s", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "../7/index.html" {
+	if got := strings.TrimSpace(string(out)); got != "https://allure.example.test/projects/demo/reports/7/index.html" {
 		t.Errorf("context.reportUrl = %q, want the url the plugin was given", got)
+	}
+}
+
+// TestReportURLForIsAbsolute guards the defect this whole url shape exists to
+// prevent. The report hands every url it carries - the trend points in
+// charts.json and every entry of a test's history - to the browser's URL
+// constructor. new URL() takes only absolute urls: given "../4/index.html" it
+// throws a TypeError, the render that asked for it unwinds, and the page stops
+// responding to anything, reload included, because the open test is part of
+// the address the page comes back to.
+//
+// A relative path is perfectly valid as an href, which is why the trend bars
+// on the overview kept working while the test page died. That split is what
+// made the bug hard to see, and it is why this asserts the scheme and host
+// rather than eyeballing the string.
+func TestReportURLForIsAbsolute(t *testing.T) {
+	got := reportURLFor(testBaseURL, "demo", 4)
+
+	want := testBaseURL + "/projects/demo/reports/4/index.html"
+	if got != want {
+		t.Errorf("reportURLFor = %q, want %q", got, want)
+	}
+
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("reportURLFor produced an unparseable url %q: %v", got, err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		t.Errorf("reportURLFor = %q, want a scheme and a host - new URL() rejects anything else", got)
+	}
+}
+
+// TestReportURLForSurvivesNewURL runs the assertion the Go side cannot make:
+// that the string this service writes is one the browser will actually accept.
+// url.Parse is far more forgiving than new URL() - it takes "../4/index.html"
+// without complaint - so a Go-only test cannot tell the good value from the
+// one that took production down. This asks the engine that does the rejecting.
+func TestReportURLForSurvivesNewURL(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed, cannot exercise new URL()")
+	}
+
+	dir := t.TempDir()
+	harness := filepath.Join(dir, "harness.mjs")
+	body := "new URL(" + strconv.Quote(reportURLFor(testBaseURL, "demo", 4)) + ");\n" +
+		"console.log(\"ok\");\n"
+	if err := os.WriteFile(harness, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing harness: %v", err)
+	}
+
+	out, err := exec.CommandContext(t.Context(), node, harness).CombinedOutput()
+	if err != nil {
+		t.Fatalf("new URL() rejected the report url, which is what kills the page:\n%s", out)
+	}
+	if got := strings.TrimSpace(string(out)); got != "ok" {
+		t.Errorf("harness said %q, want ok", got)
 	}
 }
 
@@ -858,7 +923,7 @@ func TestGetNextBuildNumberIgnoresNonDirEntries(t *testing.T) {
 func TestWriteExecutorSkipsFirstBuild(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := writeExecutor(dir, "demo", 1); err != nil {
+	if err := writeExecutor(dir, "demo", testBaseURL, 1); err != nil {
 		t.Fatalf("writeExecutor = %v, want nil", err)
 	}
 
@@ -870,7 +935,7 @@ func TestWriteExecutorSkipsFirstBuild(t *testing.T) {
 func TestWriteExecutorWritesExpectedFields(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := writeExecutor(dir, "demo", 3); err != nil {
+	if err := writeExecutor(dir, "demo", testBaseURL, 3); err != nil {
 		t.Fatalf("writeExecutor = %v, want nil", err)
 	}
 
@@ -888,7 +953,7 @@ func TestWriteExecutorWritesExpectedFields(t *testing.T) {
 		BuildOrder: 3,
 		BuildName:  "demo #3",
 		ReportName: "demo #3",
-		ReportURL:  "../3/index.html",
+		ReportURL:  testBaseURL + "/projects/demo/reports/3/index.html",
 	}
 	if got != want {
 		t.Errorf("executor.json = %+v, want %+v", got, want)
@@ -1061,7 +1126,7 @@ func TestPruneReportsKeepsAllWhenUnderTheLimit(t *testing.T) {
 	if err := projects.CreateDir(dir, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	g := New(dir, "unused-cli", 3)
+	g := New(dir, "unused-cli", 3, testBaseURL)
 
 	reports := projects.ReportsDir(dir, "demo")
 	for _, name := range []string{"1", "2"} {
@@ -1086,7 +1151,7 @@ func TestPruneReportsDeletesOldestByNumber(t *testing.T) {
 	if err := projects.CreateDir(dir, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	g := New(dir, "unused-cli", 3)
+	g := New(dir, "unused-cli", 3, testBaseURL)
 
 	reports := projects.ReportsDir(dir, "demo")
 	// "10" sorts before "9" lexicographically - this data catches a prune that
@@ -1115,7 +1180,7 @@ func TestPruneReportsDeletesOldestByNumber(t *testing.T) {
 
 func TestPruneReportsReadDirErrorPropagates(t *testing.T) {
 	dir := t.TempDir()
-	g := New(dir, "unused-cli", 3) // no project created: ReportsDir does not exist
+	g := New(dir, "unused-cli", 3, testBaseURL) // no project created: ReportsDir does not exist
 
 	if err := g.pruneReports("missing"); err == nil {
 		t.Fatal("pruneReports = nil, want an error when the reports directory can't be read")
@@ -1132,7 +1197,7 @@ func TestGenerateContinuesWhenPruneReportsFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeResult(t, dir, "demo")
-	g := New(dir, "unused-cli", testHistoryLimit)
+	g := New(dir, "unused-cli", testHistoryLimit, testBaseURL)
 
 	reports := projects.ReportsDir(dir, "demo")
 	// 0300: write+execute survive, so the rename of "latest" and the mkdir for
@@ -1386,7 +1451,7 @@ func TestTryStartClaimsExactlyOnceUnderConcurrency(t *testing.T) {
 	const rounds, callers = 200, 40
 
 	for round := range rounds {
-		g := New("unused-dir", "unused-cli", testHistoryLimit) // tryStart never touches disk
+		g := New("unused-dir", "unused-cli", testHistoryLimit, testBaseURL) // tryStart never touches disk
 
 		var ready, done sync.WaitGroup
 		ready.Add(callers)
@@ -1603,7 +1668,7 @@ func TestClearHistoryRefusesWhenResultsAreEmpty(t *testing.T) {
 	if err := projects.CreateDir(dir, "demo"); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	g := New(dir, fakeCLI(t, cliOK), testHistoryLimit)
+	g := New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL)
 
 	err := g.ClearHistory(t.Context(), "demo")
 	if !errors.Is(err, ErrNoResults) {

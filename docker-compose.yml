@@ -1,12 +1,17 @@
 services:
   allure-service:
-    image: ghcr.io/y-krenta/allure3-docker-service-go:0.0.2
+    image: ghcr.io/y-krenta/allure3-docker-service-go:0.1.0
     restart: unless-stopped
     # docker stop allows 10 seconds before SIGKILL by default. Raised to 30 so
     # the service's own shutdownTimeout (25s) fits inside it: uploads and
     # exports in flight get to finish instead of being cut off mid-response.
     stop_grace_period: 30s
     environment:
+      # The address CI and browsers reach this service at, scheme included.
+      # Every report url is built from it and the service refuses to start
+      # without it, so compose fails here rather than baking a wrong address
+      # into reports that are already published.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set it to the address this service is reachable at, e.g. http://allure.internal:5050}
       KEEP_HISTORY: 1
       KEEP_HISTORY_LATEST: 60
       # 0 - the watcher is off, reports are built on request only.
@@ -15,7 +20,7 @@ services:
       # The port is open to the network: CI runners on other machines have to
       # reach the service. It authenticates nobody, so deploy it only on a
       # trusted internal network - whoever reaches the port can write and
-      # delete. Outside access arrives in 0.2 along with built-in
+      # delete. Outside access arrives in 0.1 along with built-in
       # authentication.
       - "${ALLURE_SERVICE_PORT:-5050}:5050"
     volumes:

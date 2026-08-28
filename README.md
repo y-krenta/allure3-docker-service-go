@@ -6,7 +6,7 @@ This is a **fork** of [`fescobar/allure-docker-service`](https://github.com/fesc
 
 Each release ships one pinned version of the Allure 3 CLI, and the service's own version is independent of it. The release notes name the Allure version that release was built with; a running instance reports both at [`GET /version`](#info-endpoints), and the pin itself is the `ALLURE_VERSION` build arg in [`docker/Dockerfile`](docker/Dockerfile).
 
-> ⚠️ **No authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.2 — see [Not implemented yet](#not-implemented-yet).
+> ⚠️ **No authentication.** Everything documented below works, but the service authenticates nobody: whoever can reach the port can upload results and delete projects. Deploy it **only inside a trusted internal network**. Built-in auth is planned for 0.1 — see [Not implemented yet](#not-implemented-yet).
 
 Table of contents
 =================
@@ -29,6 +29,7 @@ Table of contents
 * [Opening the report](#opening-the-report)
 * [Deploying](#deploying)
    * [File permissions](#file-permissions)
+   * [Day-to-day operations](#day-to-day-operations)
    * [Updating](#updating)
    * [Kubernetes](#kubernetes)
 * [Known issues](#known-issues)
@@ -74,6 +75,7 @@ services:
     image: ghcr.io/y-krenta/allure3-docker-service-go:latest
     restart: unless-stopped
     environment:
+      PUBLIC_BASE_URL: http://allure.internal:5050   # required, the address CI and browsers reach this service at
       KEEP_HISTORY: 1
       KEEP_HISTORY_LATEST: 60
       CHECK_RESULTS_EVERY_SECONDS: 0     # 0 — watcher off, reports are built on request
@@ -89,6 +91,7 @@ Mount the **projects root as a whole**. Publishing a report renames a directory 
 
 ```sh
 docker run -d -p 5050:5050 \
+           -e PUBLIC_BASE_URL=http://allure.internal:5050 \
            -e KEEP_HISTORY=1 -e KEEP_HISTORY_LATEST=60 \
            -v ${PWD}/.data/projects:/app/projects \
            ghcr.io/y-krenta/allure3-docker-service-go:latest
@@ -101,16 +104,19 @@ On Windows `${PWD}` only works in [Git Bash](https://git-scm.com/downloads) (`-v
 The [Allure 3](https://allurereport.org/docs/) CLI on `PATH` is required:
 
 ```sh
+PUBLIC_BASE_URL=http://localhost:5050 \
 STATIC_CONTENT_PROJECTS="$PWD/.local/projects" go run ./cmd/allure-service
 ```
 
 `STATIC_CONTENT_PROJECTS` is mandatory on a dev machine: the default `/app/projects` is a container path and `MkdirAll` on it fails with `permission denied`. The directory (and the `default` project inside it) is created on start.
 
+`PUBLIC_BASE_URL` is mandatory everywhere and has no default: the service cannot guess the address it is reached at, and every report is stamped with urls built from it. It must be absolute — scheme and host — or the service exits at startup.
+
 The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or `allure --version` fails, the service exits immediately rather than discovering it on the first build:
 
 ```
 2026/08/13 00:34:39 history limit 60
-2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.15.0)
+2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.16.0)
 2026/08/13 00:34:39 Starting server on port 5050
 ```
 
@@ -131,6 +137,7 @@ All configuration is environment variables; invalid values fall back to the defa
 
 | Variable | Default | Effect |
 |---|---|---|
+| `PUBLIC_BASE_URL` | — | **Required.** Absolute public address of this service, e.g. `http://allure.internal:5050`. Report urls are built from it; a missing or relative value exits at startup |
 | `PORT` | `5050` | HTTP listen port |
 | `STATIC_CONTENT_PROJECTS` | `/app/projects` | Projects root on disk. Must be set when running outside the container |
 | `ALLURE_BIN` | `allure` | Allure CLI name or path; a bare name is looked up in `PATH` |
@@ -204,7 +211,7 @@ curl -s http://localhost:5050/config
 # {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
 
 curl -s http://localhost:5050/version
-# {"allure_version":"3.15.0","service_version":"0.0.2"}
+# {"allure_version":"3.16.0","service_version":"0.1.0"}
 ```
 
 `/config` reports the subset of settings that actually influence behaviour. `/version` answers with both versions that describe a running container: `allure_version` is asked of the CLI itself (`allure --version`) at startup rather than read from a build-time file, and `service_version` is stamped into the binary when the image is built — a source build reports `dev`.
@@ -392,6 +399,30 @@ mkdir -p .data/projects && sudo chown -R 1000:1000 .data/projects
 
 Docker Desktop on macOS and Windows handles ownership for you. Do not work around this by running the container as `root`.
 
+### Day-to-day operations
+
+Everything below runs from the directory holding your `docker-compose.yml`:
+
+```sh
+docker compose logs -f allure-service   # follow the log
+docker compose ps                       # state, including the healthcheck
+docker compose restart allure-service   # restart
+docker compose down                     # stop; the reports on disk stay
+
+du -sh .data/projects                   # total disk used
+du -sh .data/projects/*                 # per project
+```
+
+Storage grows with `KEEP_HISTORY_LATEST` x the size of one run x the number of projects, and the service enforces no ceiling of its own: watch `du`, lower the retention, or delete projects you no longer need. Filling the disk under the mount is the one failure mode that takes the whole service down.
+
+Back up the projects root with the service stopped, so a build in flight cannot be captured half-written:
+
+```sh
+docker compose stop
+tar czf allure-backup-$(date +%F).tgz -C /path/to/storage projects
+docker compose start
+```
+
 ### Updating
 
 Change the tag in `docker-compose.yml` to the version you want — see the [releases](https://github.com/y-krenta/allure3-docker-service-go/releases) for what changed — and:
@@ -421,7 +452,7 @@ The service is a single stateless process plus a data directory, so it deploys l
 
 Parsed or planned, but with no behaviour behind them today:
 
-- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.2. Until then, keep the service on a trusted network.
+- **Authentication** (`SECURITY_ENABLED`, JWT login/refresh/logout, admin & viewer roles) — planned for 0.1. Until then, keep the service on a trusted network.
 - **TLS** (`TLS`) — setting it refuses to start; terminate TLS at a reverse proxy for now.
 - **`OPTIMIZE_STORAGE`** — parsed, ignored; planned for a later release. Setting it logs a warning at startup.
 - **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.

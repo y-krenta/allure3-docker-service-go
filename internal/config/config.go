@@ -21,6 +21,7 @@ type Config struct {
 	DevMode              bool          // Debug reloader; parsed, not implemented yet
 	ProjectsDir          string        // Default path projects
 	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
+	PublicBaseURL        string        // Public address of this service; required, validated in main
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -39,6 +40,7 @@ func Load() Config {
 	config.DevMode = getEnvAsBool("DEV_MODE", false)
 	config.ProjectsDir = cmp.Or(os.Getenv("STATIC_CONTENT_PROJECTS"), "/app/projects")
 	config.AllureBin = cmp.Or(os.Getenv("ALLURE_BIN"), "allure")
+	config.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
 
 	return config
 

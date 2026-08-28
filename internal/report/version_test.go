@@ -15,7 +15,7 @@ func TestVersion(t *testing.T) {
 		// and stripping it is the whole reason this lives in a tested
 		// package instead of in main: a version still carrying "\n" is
 		// valid JSON and wrong on the wire.
-		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\necho '3.14.3'\n"), testHistoryLimit)
+		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\necho '3.14.3'\n"), testHistoryLimit, testBaseURL)
 
 		got, err := g.Version(t.Context())
 		if err != nil {
@@ -30,7 +30,7 @@ func TestVersion(t *testing.T) {
 		// A CLI asked the wrong question can still answer something that
 		// looks like a version. The script echoes its arguments back, so
 		// the assertion is on what the process actually received.
-		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), testHistoryLimit)
+		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), testHistoryLimit, testBaseURL)
 
 		got, err := g.Version(t.Context())
 		if err != nil {
@@ -45,7 +45,7 @@ func TestVersion(t *testing.T) {
 		// "exit status 1" alone is what an operator would otherwise get
 		// when the service refuses to start, so the message is the point
 		// of the branch, not a nicety.
-		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\necho 'Error occurred during initialization of VM' >&2\nexit 3\n"), testHistoryLimit)
+		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\necho 'Error occurred during initialization of VM' >&2\nexit 3\n"), testHistoryLimit, testBaseURL)
 
 		_, err := g.Version(t.Context())
 		if err == nil {
@@ -61,7 +61,7 @@ func TestVersion(t *testing.T) {
 	})
 
 	t.Run("a missing CLI is reported, not panicked on", func(t *testing.T) {
-		g := New("unused-dir", "no-such-allure-binary", testHistoryLimit)
+		g := New("unused-dir", "no-such-allure-binary", testHistoryLimit, testBaseURL)
 
 		_, err := g.Version(t.Context())
 		if !errors.Is(err, exec.ErrNotFound) {
@@ -72,7 +72,7 @@ func TestVersion(t *testing.T) {
 	t.Run("a hung CLI is killed when the context expires", func(t *testing.T) {
 		// Without the context this call would block startup forever, and
 		// silently: no port open, no log line, nothing to look at.
-		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\nsleep 30\n"), testHistoryLimit)
+		g := New("unused-dir", fakeCLI(t, "#!/bin/sh\nsleep 30\n"), testHistoryLimit, testBaseURL)
 
 		ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 		defer cancel()
