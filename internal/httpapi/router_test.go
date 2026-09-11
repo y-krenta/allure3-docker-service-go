@@ -38,9 +38,15 @@ func TestRoutes(t *testing.T) {
 		{name: "serve report", method: http.MethodGet, target: "/projects/demo/reports/latest/app.js", wantStatus: http.StatusNotFound},
 		{name: "start generation", method: http.MethodPost, target: "/projects/demo/generation", wantStatus: http.StatusAccepted},
 		{name: "generation status", method: http.MethodGet, target: "/projects/demo/generation", wantStatus: http.StatusOK},
+		// The source has no history, so the handler answers 409 - a status the
+		// mux cannot produce on its own, unlike the 404 an unregistered path
+		// gets.
+		{name: "seed history", method: http.MethodPost, target: "/projects/demo/history/seed",
+			body: strings.NewReader(`{"from_project_id":"baseline"}`), contentType: "application/json", wantStatus: http.StatusConflict},
 
 		{name: "unknown path", method: http.MethodGet, target: "/nope", wantStatus: http.StatusNotFound},
 		{name: "wrong method on projects", method: http.MethodPut, target: "/projects", wantStatus: http.StatusMethodNotAllowed},
+		{name: "wrong method on seed history", method: http.MethodGet, target: "/projects/demo/history/seed", wantStatus: http.StatusMethodNotAllowed},
 	}
 
 	for _, tt := range tests {

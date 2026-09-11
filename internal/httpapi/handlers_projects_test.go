@@ -612,3 +612,173 @@ func TestLockWaitingHandlersLiftTheWriteDeadline(t *testing.T) {
 		})
 	}
 }
+
+// seedRequest posts a seed request for target with the given raw JSON body,
+// filling in the {id} path value the way ServeMux would.
+func seedRequest(s *Server, target, body string) *httptest.ResponseRecorder {
+	return callWithPath(s.seedHistory, http.MethodPost,
+		"/projects/"+target+"/history/seed", strings.NewReader(body),
+		map[string]string{"id": target})
+}
+
+// writeHistory gives a project the history file a seed can copy.
+func writeHistory(t *testing.T, dir, id, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(projects.HistoryFile(dir, id), []byte(content), 0644); err != nil {
+		t.Fatalf("setup history for %q: %v", id, err)
+	}
+}
+
+func TestSeedHistory(t *testing.T) {
+	const history = "{\"run\":1}\n{\"run\":2}\n"
+
+	t.Run("copies the source history and answers 204", func(t *testing.T) {
+		s, dir := newTestServer(t, "master", "mr-1")
+		writeHistory(t, dir, "master", history)
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"master"}`)
+
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNoContent, w.Body)
+		}
+		// A 204 carrying a body is malformed: the status says there is
+		// nothing to read, so a client is entitled not to read it.
+		if w.Body.Len() != 0 {
+			t.Errorf("204 carried a body: %q", w.Body)
+		}
+
+		got, err := os.ReadFile(projects.HistoryFile(dir, "mr-1"))
+		if err != nil {
+			t.Fatalf("target has no history after a 204: %v", err)
+		}
+		if string(got) != history {
+			t.Errorf("target history = %q, want %q", got, history)
+		}
+	})
+
+	// A body that will not decode leaves FromProjectID empty, which the ID
+	// check below would reject with a 400 of its own - so the status alone
+	// cannot tell whether the decode was even looked at. The message can, and
+	// it is also what the client is told went wrong. Asserting on the whole
+	// body catches the missing return too: without it the second 400 appends
+	// its own message underneath the first.
+	t.Run("rejects a malformed body", func(t *testing.T) {
+		s, _ := newTestServer(t, "master", "mr-1")
+
+		for _, body := range []string{"", "not json", `{"from_project_id":`} {
+			w := seedRequest(s, "mr-1", body)
+
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("body %q: status = %d, want %d (body: %s)", body, w.Code, http.StatusBadRequest, w.Body)
+			}
+			if got := w.Body.String(); got != "invalid request body\n" {
+				t.Errorf("body %q: answered %q, want the decode error alone", body, got)
+			}
+		}
+	})
+
+	// The source ID is the half that arrives in the request body, so nothing
+	// upstream of the handler has looked at it. It reaches filepath.Join all
+	// the same.
+	t.Run("rejects a source ID that escapes the projects root", func(t *testing.T) {
+		s, dir := newTestServer(t, "mr-1")
+		outside := filepath.Join(dir, "..", "outside.jsonl")
+		if err := os.WriteFile(outside, []byte("secrets\n"), 0644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"../outside"}`)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+		if _, err := os.Stat(projects.HistoryFile(dir, "mr-1")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the escaping source was read anyway (stat err = %v)", err)
+		}
+	})
+
+	t.Run("rejects an invalid target ID", func(t *testing.T) {
+		s, _ := newTestServer(t, "master")
+
+		w := seedRequest(s, "BAD_ID", `{"from_project_id":"master"}`)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+	})
+
+	t.Run("reports a missing target project as 404", func(t *testing.T) {
+		s, dir := newTestServer(t, "master")
+		writeHistory(t, dir, "master", history)
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"master"}`)
+
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
+		}
+	})
+
+	// 409 rather than 204: the copy did happen, but a build seeded from an
+	// empty source compares against nothing, and a regression gate reading a
+	// 204 here would report all clear without having compared anything.
+	t.Run("reports a source without history as 409", func(t *testing.T) {
+		s, dir := newTestServer(t, "master", "mr-1")
+		writeHistory(t, dir, "mr-1", "{\"stale\":true}\n")
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"master"}`)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusConflict, w.Body)
+		}
+		// The 409 does not undo the clearing: leaving the target's own
+		// history in place would make the next build compare an MR against
+		// itself, which is the comparison the seed exists to prevent.
+		if _, err := os.Stat(projects.HistoryFile(dir, "mr-1")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("stale target history survived the 409 (stat err = %v)", err)
+		}
+	})
+
+	t.Run("reports a missing source project as 409", func(t *testing.T) {
+		s, _ := newTestServer(t, "mr-1")
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"nosuch"}`)
+
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusConflict, w.Body)
+		}
+	})
+
+	t.Run("rejects a source equal to the target", func(t *testing.T) {
+		s, dir := newTestServer(t, "mr-1")
+		writeHistory(t, dir, "mr-1", history)
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"mr-1"}`)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
+		}
+	})
+
+	// The cause of a 500 is an os error naming a path on disk, which is the
+	// service's own layout and none of the client's business. It goes to the
+	// log; the client gets the same fixed sentence every other 500 gets.
+	t.Run("keeps the cause of a 500 out of the response", func(t *testing.T) {
+		s, dir := newTestServer(t, "master", "mr-1")
+		writeHistory(t, dir, "master", history)
+		// A directory where the history file belongs makes rename(2) refuse,
+		// which is neither of the two sentinels and so lands on the 500.
+		if err := os.MkdirAll(filepath.Join(projects.HistoryFile(dir, "mr-1"), "occupied"), 0755); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+
+		w := seedRequest(s, "mr-1", `{"from_project_id":"master"}`)
+
+		if w.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body)
+		}
+		if got := w.Body.String(); got != msgInternalError+"\n" {
+			t.Errorf("500 answered %q, want %q - the cause belongs in the log", got, msgInternalError)
+		}
+	})
+}
