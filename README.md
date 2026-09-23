@@ -51,13 +51,23 @@ This service solves both. CI uploads a run's `allure-results` over HTTP, and the
 - **keeps the project's history** — the trend charts span past runs (the last 60 by default), each test shows its own history, and every past run stays archived: a click on its bar in the chart opens it.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_dark.png">
-  <img alt="An Allure 3 report served by the service: run summary, test tree by suite, and the selected test's steps and labels" src=".github/images/report_light.png">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_main_dark.png">
+  <img alt="The report page: pass rate, flaky and retried test counts, and the test tree grouped by suite" src=".github/images/report_main_light.png">
 </picture>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_dark.png">
-  <img alt="The report's Graphs page after six runs: current status, Status dynamics with one bar per run, results by severity and status transitions" src=".github/images/graphs_light.png">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_details_dark.png">
+  <img alt="A test's page: its status in the last five runs, history and retry tabs, labels and steps" src=".github/images/report_details_light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_current_dark.png">
+  <img alt="The Graphs page: current status, and Status dynamics with one bar per run over six runs" src=".github/images/graphs_current_light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_status_dark.png">
+  <img alt="The Graphs page: results by severity, and status transitions between consecutive runs" src=".github/images/graphs_status_light.png">
 </picture>
 
 You produce the `allure-results` yourself, with the Allure adapter for your stack (pytest, TestNG, JUnit, Cucumber, Playwright, etc.). Projects are isolated from each other; one called `default` is created on start.
