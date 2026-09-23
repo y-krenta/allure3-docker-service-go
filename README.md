@@ -45,6 +45,11 @@ Allure Framework produces good-looking reports for test automation. Normally, se
 
 This container turns that into a long-running web server. Your CI uploads the `allure-results` of a run over the API, the service generates a fresh **Allure 3 (Awesome)** report and publishes it at a stable URL, archiving the previous run so trends accumulate across executions.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_dark.png">
+  <img alt="An Allure 3 report served by the service: run summary, test tree by suite, and the selected test's steps and labels" src=".github/images/report_light.png">
+</picture>
+
 - Useful for a team to track test status per project, with the history of past runs.
 - Useful for developers who run tests locally and want to inspect regressions.
 
@@ -404,6 +409,11 @@ The sequence is the same under any CI system; what changes is only the wrapper a
 ## History and trends
 
 With `KEEP_HISTORY` enabled, every build appends a line to `<project>/history.jsonl` and archives the report under a numbered directory, so the next report can draw the "Status dynamics" trend widget — one bar per past run plus the current one.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_dark.png">
+  <img alt="The report's Graphs page after six runs: current status, Status dynamics with one bar per run, results by severity and status transitions" src=".github/images/graphs_light.png">
+</picture>
 
 Bars of past runs are **clickable**: a click opens that run (`reports/{N}/`) in a new tab. No configuration needed — the service injects an Allure plugin that stamps each history entry with the address of its archive. Two caveats:
 
