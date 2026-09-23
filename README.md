@@ -25,7 +25,6 @@ Table of contents
    * [Report generation](#report-generation)
    * [Report endpoints](#report-endpoints)
 * [Typical CI workflow](#typical-ci-workflow)
-* [History and trends](#history-and-trends)
 * [Opening the report](#opening-the-report)
 * [Deploying](#deploying)
    * [File permissions](#file-permissions)
@@ -41,21 +40,27 @@ Table of contents
 
 ## What it does
 
-Allure Framework produces good-looking reports for test automation. Normally, seeing an up-to-date report means generating and opening it locally after every run — tedious on a shared team setup.
+Allure turns the results of a test run into a report, but on its own it leaves two problems to you:
 
-This container turns that into a long-running web server. Your CI uploads the `allure-results` of a run over the API, the service generates a fresh **Allure 3 (Awesome)** report and publishes it at a stable URL, archiving the previous run so trends accumulate across executions.
+- **Where does the report live?** The CLI writes a static site to disk. After every run someone has to build it, host it and share a new link.
+- **What happened in earlier runs?** Allure 3 draws trends and marks tests `new`, `flaky` or `regressed` only by comparing against the history of previous runs. A CI job usually starts in a clean workspace, so every report shows a single run with nothing to compare it to.
+
+This service solves both. CI uploads a run's `allure-results` over HTTP, and the service builds an **Allure 3 (Awesome)** report and:
+
+- **publishes it at one stable URL per project** — `/projects/{id}/latest-report` always opens the newest run, and a failed build never replaces the last good report;
+- **keeps the project's history** — the trend charts span past runs (the last 60 by default), each test shows its own history, and every past run stays archived: a click on its bar in the chart opens it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_dark.png">
   <img alt="An Allure 3 report served by the service: run summary, test tree by suite, and the selected test's steps and labels" src=".github/images/report_light.png">
 </picture>
 
-- Useful for a team to track test status per project, with the history of past runs.
-- Useful for developers who run tests locally and want to inspect regressions.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_dark.png">
+  <img alt="The report's Graphs page after six runs: current status, Status dynamics with one bar per run, results by severity and status transitions" src=".github/images/graphs_light.png">
+</picture>
 
-The service only **generates reports from results** — you produce the `allure-results` with whatever Allure adapter your stack uses (pytest, TestNG, JUnit, Cucumber, Playwright, etc.).
-
-Multiple isolated projects are supported out of the box; a project called `default` is always created on start.
+You produce the `allure-results` yourself, with the Allure adapter for your stack (pytest, TestNG, JUnit, Cucumber, Playwright, etc.). Projects are isolated from each other; one called `default` is created on start.
 
 ## Quick start
 
@@ -405,22 +410,6 @@ Three details make the difference between a pipeline that reports the truth and 
 - **The upload builds an argument array.** Interpolating a glob into the command line splits on spaces, so it breaks as soon as the workspace path has one — `/var/lib/jenkins/workspace/My Job/allure-results` is an ordinary path. An empty `allure-results` is the other case: with `nullglob` unset it sends the literal `*` as a file name and gets a `400`, instead of saying plainly that the tests produced nothing.
 
 The sequence is the same under any CI system; what changes is only the wrapper around it. In GitHub Actions it is a `run:` step in a job whose `services:` block runs the image; in GitLab CI a `script:` with the image under `services:`; on Jenkins a `sh` step. Any runner with `bash`, `curl` and `jq` can execute the block as written.
-
-## History and trends
-
-With `KEEP_HISTORY` enabled, every build appends a line to `<project>/history.jsonl` and archives the report under a numbered directory, so the next report can draw the "Status dynamics" trend widget — one bar per past run plus the current one.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_dark.png">
-  <img alt="The report's Graphs page after six runs: current status, Status dynamics with one bar per run, results by severity and status transitions" src=".github/images/graphs_light.png">
-</picture>
-
-Bars of past runs are **clickable**: a click opens that run (`reports/{N}/`) in a new tab. No configuration needed — the service injects an Allure plugin that stamps each history entry with the address of its archive. Two caveats:
-
-- links only exist for runs built by a service version that has the plugin; older history lines have no address and their bars stay inert;
-- `KEEP_HISTORY_LATEST` trims archives and history together, so a link disappears along with its trend point rather than rotting into a 404.
-
-`POST /projects/{id}/history/clean` starts the history over, and `POST /projects/{id}/history/seed` replaces it with another project's.
 
 ## Opening the report
 
