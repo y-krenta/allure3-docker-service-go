@@ -218,9 +218,10 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 // answering 302.
 //
 // Responds 200 with the file, 301 for an explicit index.html (net/http
-// canonicalises it to "./"), 400 if id fails projects.ValidateProjectID or the
-// path is empty, and 404 for anything absent - a directory without an
-// index.html included.
+// canonicalises it to "./"), 302 to the report directory for an Allure
+// history link ("<n>/index.html/awesome", see the redirect in the body), 400
+// if id fails projects.ValidateProjectID or the path is empty, and 404 for
+// anything absent - a directory without an index.html included.
 func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireProjectID(w, r)
 	if !ok {
@@ -230,6 +231,19 @@ func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 	reportPath = path.Clean(reportPath)
 	if reportPath == "." {
 		http.Error(w, "path empty", http.StatusBadRequest)
+		return
+	}
+
+	// Reports built by Allure before 3.18 link a past run as
+	// <reportUrl>/awesome#<testId>, expecting a per-plugin directory our
+	// flattened report doesn't have, so their history links arrive as
+	// "<n>/index.html/awesome". 3.18 links <reportUrl>#<testId> directly; drop
+	// this once no archived report predates it. Location is relative so a
+	// proxy's path prefix survives (http.Redirect would make it absolute); the
+	// browser keeps the #testId.
+	if strings.HasSuffix(reportPath, "/index.html/awesome") {
+		w.Header().Set("Location", "../")
+		w.WriteHeader(http.StatusFound)
 		return
 	}
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,6 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
-// writeBuild creates <projectsDir>/<id>/reports/<build>/index.html and stamps
-// it with modTime, so getProject has something to sort.
 func writeBuild(t *testing.T, dir, id, build string, modTime time.Time) string {
 	t.Helper()
 
@@ -38,8 +37,6 @@ func writeBuild(t *testing.T, dir, id, build string, modTime time.Time) string {
 	return buildDir
 }
 
-// callWithPath invokes h with the given path values set, the way ServeMux
-// would have filled them in from the route pattern.
 func callWithPath(h http.HandlerFunc, method, target string, body io.Reader, pathValues map[string]string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, target, body)
 	for k, v := range pathValues {
@@ -104,8 +101,7 @@ func TestListProjects(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
 		}
-		// A JSON body with no Content-Type leaves the client sniffing, and
-		// nothing else in this test would notice the header going missing.
+
 		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
 			t.Errorf("Content-Type = %q, want application/json", ct)
 		}
@@ -227,10 +223,7 @@ func TestDeleteProject(t *testing.T) {
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNoContent, w.Body)
 		}
-		// Removing the tree here directly would leave the project's lock
-		// untaken, so a build already in flight would have its directory
-		// pulled out from under it mid-rename. The generator owns that lock
-		// and is the only way to hold it.
+
 		if len(gen.deletedWith) != 1 || gen.deletedWith[0] != "demo" {
 			t.Errorf("Delete called with %v, want exactly one call for %q", gen.deletedWith, "demo")
 		}
@@ -278,9 +271,7 @@ func TestClearResults(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
 		}
-		// A handler that forgot to return after the 404 branch falls through
-		// into the 500 branch next: the recorder keeps the first status code
-		// either way, so only the body gives away the missing return.
+
 		if body := w.Body.String(); strings.Contains(body, msgInternalError) {
 			t.Errorf("body = %q, contains the 500 message too: a return is missing after the 404 write", body)
 		}
@@ -458,8 +449,6 @@ func TestServeProjectReport(t *testing.T) {
 		}
 	})
 
-	// net/http redirects an explicit ".../index.html" to "./" before serving,
-	// so clients that request the file by name pay an extra round trip.
 	t.Run("explicit index.html redirects to the directory", func(t *testing.T) {
 		s, dir := newTestServer(t, "demo")
 		writeBuild(t, dir, "demo", "latest", time.Now())
@@ -472,6 +461,86 @@ func TestServeProjectReport(t *testing.T) {
 		}
 		if got := w.Header().Get("Location"); got != "./" {
 			t.Errorf("Location = %q, want %q", got, "./")
+		}
+	})
+
+	t.Run("history link redirects to its report directory", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "7", time.Now())
+
+		target := "/projects/demo/reports/7/index.html/awesome"
+		w := callWithPath(s.serveProjectReport, http.MethodGet, target, nil,
+			map[string]string{"id": "demo", "path": "7/index.html/awesome"})
+
+		if w.Code != http.StatusFound {
+			t.Fatalf("status = %d, want %d", w.Code, http.StatusFound)
+		}
+
+		if w.Body.Len() != 0 {
+			t.Errorf("body = %q, want empty", w.Body)
+		}
+		loc, err := url.Parse(w.Header().Get("Location"))
+		if err != nil {
+			t.Fatalf("parsing Location: %v", err)
+		}
+		if loc.IsAbs() || strings.HasPrefix(loc.Path, "/") {
+			t.Errorf("Location = %q, want a relative one that keeps a proxy's path prefix", loc)
+		}
+		base, _ := url.Parse(target)
+		if got := base.ResolveReference(loc).Path; got != "/projects/demo/reports/7/" {
+			t.Errorf("Location resolves to %q, want %q", got, "/projects/demo/reports/7/")
+		}
+	})
+
+	t.Run("history link lands on the report behind a path prefix", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "7", time.Now())
+
+		srv := httptest.NewServer(http.StripPrefix("/allure", s.Routes()))
+		t.Cleanup(srv.Close)
+
+		resp, err := srv.Client().Get(srv.URL + "/allure/projects/demo/reports/7/index.html/awesome")
+		if err != nil {
+			t.Fatalf("GET: %v", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("reading body: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d (body: %s)", resp.StatusCode, http.StatusOK, body)
+		}
+		if got := resp.Request.URL.Path; got != "/allure/projects/demo/reports/7/" {
+			t.Errorf("landed on %q, want %q", got, "/allure/projects/demo/reports/7/")
+		}
+		if string(body) != "<h1>7</h1>" {
+			t.Errorf("body = %q, want the report's index.html", body)
+		}
+	})
+
+	t.Run("only the history link shape is redirected", func(t *testing.T) {
+		s, dir := newTestServer(t, "demo")
+		writeBuild(t, dir, "demo", "7", time.Now())
+
+		writeBuild(t, dir, "demo", "7/awesome", time.Now())
+
+		w := callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/7/awesome/", nil,
+			map[string]string{"id": "demo", "path": "7/awesome/"})
+		if w.Code != http.StatusOK {
+			t.Fatalf("real awesome dir: status = %d, want %d", w.Code, http.StatusOK)
+		}
+		if got := w.Body.String(); got != "<h1>7/awesome</h1>" {
+			t.Errorf("real awesome dir: body = %q, want its index.html", got)
+		}
+
+		for _, p := range []string{"7/myindex.html/awesome", "7/index.html/awesome/app.js"} {
+			w = callWithPath(s.serveProjectReport, http.MethodGet, "/projects/demo/reports/"+p, nil,
+				map[string]string{"id": "demo", "path": p})
+			if w.Code != http.StatusNotFound {
+				t.Errorf("%s: status = %d, want %d", p, w.Code, http.StatusNotFound)
+			}
 		}
 	})
 
@@ -512,10 +581,6 @@ func TestServeProjectReport(t *testing.T) {
 		s, dir := newTestServer(t, "demo")
 		writeBuild(t, dir, "demo", "latest", time.Now())
 
-		// data/ is one of the subdirectories an Allure report is full of:
-		// no index.html of its own, and holding internals - attachment
-		// files, history, widget JSON - that http.ServeFileFS would answer
-		// with a generated listing of.
 		data := filepath.Join(projects.ReportsDir(dir, "demo"), "latest", "data")
 		if err := os.MkdirAll(data, 0755); err != nil {
 			t.Fatalf("setup: %v", err)
@@ -539,9 +604,6 @@ func TestServeProjectReport(t *testing.T) {
 		s, dir := newTestServer(t, "demo")
 		writeBuild(t, dir, "demo", "latest", time.Now())
 
-		// The report is republished at these same addresses by every
-		// rebuild, so a browser that reuses a cached copy without asking
-		// shows an old report with nothing to say so.
 		for _, tc := range []struct{ name, path string }{
 			{"index through the directory", "latest/"},
 			{"a file by name", "latest/index.html"},
@@ -575,12 +637,6 @@ func TestServeProjectReport(t *testing.T) {
 }
 
 func TestLockWaitingHandlersLiftTheWriteDeadline(t *testing.T) {
-	// Clearing results, clearing history and deleting a project all take the
-	// project's lock, and a build in flight holds it for as long as the report
-	// package's generate timeout - ten minutes, forty times the server's
-	// WriteTimeout. Without lifting the deadline the work still happens and
-	// the answer cannot be written: the caller sees a broken connection and
-	// retries an operation that already succeeded.
 	cases := []struct {
 		name    string
 		method  string
@@ -613,15 +669,12 @@ func TestLockWaitingHandlersLiftTheWriteDeadline(t *testing.T) {
 	}
 }
 
-// seedRequest posts a seed request for target with the given raw JSON body,
-// filling in the {id} path value the way ServeMux would.
 func seedRequest(s *Server, target, body string) *httptest.ResponseRecorder {
 	return callWithPath(s.seedHistory, http.MethodPost,
 		"/projects/"+target+"/history/seed", strings.NewReader(body),
 		map[string]string{"id": target})
 }
 
-// writeHistory gives a project the history file a seed can copy.
 func writeHistory(t *testing.T, dir, id, content string) {
 	t.Helper()
 
@@ -642,8 +695,7 @@ func TestSeedHistory(t *testing.T) {
 		if w.Code != http.StatusNoContent {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNoContent, w.Body)
 		}
-		// A 204 carrying a body is malformed: the status says there is
-		// nothing to read, so a client is entitled not to read it.
+
 		if w.Body.Len() != 0 {
 			t.Errorf("204 carried a body: %q", w.Body)
 		}
@@ -657,12 +709,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// A body that will not decode leaves FromProjectID empty, which the ID
-	// check below would reject with a 400 of its own - so the status alone
-	// cannot tell whether the decode was even looked at. The message can, and
-	// it is also what the client is told went wrong. Asserting on the whole
-	// body catches the missing return too: without it the second 400 appends
-	// its own message underneath the first.
 	t.Run("rejects a malformed body", func(t *testing.T) {
 		s, _ := newTestServer(t, "master", "mr-1")
 
@@ -678,9 +724,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// The source ID is the half that arrives in the request body, so nothing
-	// upstream of the handler has looked at it. It reaches filepath.Join all
-	// the same.
 	t.Run("rejects a source ID that escapes the projects root", func(t *testing.T) {
 		s, dir := newTestServer(t, "mr-1")
 		outside := filepath.Join(dir, "..", "outside.jsonl")
@@ -719,9 +762,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// 409 rather than 204: the copy did happen, but a build seeded from an
-	// empty source compares against nothing, and a regression gate reading a
-	// 204 here would report all clear without having compared anything.
 	t.Run("reports a source without history as 409", func(t *testing.T) {
 		s, dir := newTestServer(t, "master", "mr-1")
 		writeHistory(t, dir, "mr-1", "{\"stale\":true}\n")
@@ -731,9 +771,7 @@ func TestSeedHistory(t *testing.T) {
 		if w.Code != http.StatusConflict {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusConflict, w.Body)
 		}
-		// The 409 does not undo the clearing: leaving the target's own
-		// history in place would make the next build compare an MR against
-		// itself, which is the comparison the seed exists to prevent.
+
 		if _, err := os.Stat(projects.HistoryFile(dir, "mr-1")); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("stale target history survived the 409 (stat err = %v)", err)
 		}
@@ -760,14 +798,10 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// The cause of a 500 is an os error naming a path on disk, which is the
-	// service's own layout and none of the client's business. It goes to the
-	// log; the client gets the same fixed sentence every other 500 gets.
 	t.Run("keeps the cause of a 500 out of the response", func(t *testing.T) {
 		s, dir := newTestServer(t, "master", "mr-1")
 		writeHistory(t, dir, "master", history)
-		// A directory where the history file belongs makes rename(2) refuse,
-		// which is neither of the two sentinels and so lands on the 500.
+
 		if err := os.MkdirAll(filepath.Join(projects.HistoryFile(dir, "mr-1"), "occupied"), 0755); err != nil {
 			t.Fatalf("setup: %v", err)
 		}

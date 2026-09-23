@@ -25,7 +25,6 @@ Table of contents
    * [Report generation](#report-generation)
    * [Report endpoints](#report-endpoints)
 * [Typical CI workflow](#typical-ci-workflow)
-* [History and trends](#history-and-trends)
 * [Opening the report](#opening-the-report)
 * [Deploying](#deploying)
    * [File permissions](#file-permissions)
@@ -41,16 +40,37 @@ Table of contents
 
 ## What it does
 
-Allure Framework produces good-looking reports for test automation. Normally, seeing an up-to-date report means generating and opening it locally after every run — tedious on a shared team setup.
+Allure turns the results of a test run into a report, but on its own it leaves two problems to you:
 
-This container turns that into a long-running web server. Your CI uploads the `allure-results` of a run over the API, the service generates a fresh **Allure 3 (Awesome)** report and publishes it at a stable URL, archiving the previous run so trends accumulate across executions.
+- **Where does the report live?** The CLI writes a static site to disk. After every run someone has to build it, host it and share a new link.
+- **What happened in earlier runs?** Allure 3 draws trends and marks tests `new`, `flaky` or `regressed` only by comparing against the history of previous runs. A CI job usually starts in a clean workspace, so every report shows a single run with nothing to compare it to.
 
-- Useful for a team to track test status per project, with the history of past runs.
-- Useful for developers who run tests locally and want to inspect regressions.
+This service solves both. CI uploads a run's `allure-results` over HTTP, and the service builds an **Allure 3 (Awesome)** report and:
 
-The service only **generates reports from results** — you produce the `allure-results` with whatever Allure adapter your stack uses (pytest, TestNG, JUnit, Cucumber, Playwright, etc.).
+- **publishes it at one stable URL per project** — `/projects/{id}/latest-report` always opens the newest run, and a failed build never replaces the last good report;
+- **keeps the project's history** — the trend charts span past runs, each test shows its own history, and each of those runs stays archived: a click on its bar in the chart opens it. Both the history and the archives are trimmed to the last `KEEP_HISTORY_LATEST` runs (60 by default), so a link disappears together with its bar; `KEEP_HISTORY=false` turns history off entirely. Bars of runs built before the service could link them (versions below 0.3.0) stay inert.
 
-Multiple isolated projects are supported out of the box; a project called `default` is always created on start.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_main_dark.png">
+  <img alt="The report page: pass rate, flaky and retried test counts, and the test tree grouped by suite" src=".github/images/report_main_light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_details_dark.png">
+  <img alt="A test's page: its status in the last five runs, history and retry tabs, labels and steps" src=".github/images/report_details_light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_current_dark.png">
+  <img alt="The Graphs page: current status, and Status dynamics with one bar per run over six runs" src=".github/images/graphs_current_light.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/images/graphs_status_dark.png">
+  <img alt="The Graphs page: results by severity, and status transitions between consecutive runs" src=".github/images/graphs_status_light.png">
+</picture>
+
+You produce the `allure-results` yourself, with the Allure adapter for your stack (pytest, TestNG, JUnit, Cucumber, Playwright, etc.). Projects are isolated from each other; one called `default` is created on start.
 
 ## Quick start
 
@@ -116,7 +136,7 @@ The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or
 
 ```
 2026/08/13 00:34:39 history limit 60
-2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.16.0)
+2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.18.0)
 2026/08/13 00:34:39 Starting server on port 5050
 ```
 
@@ -130,6 +150,27 @@ This service generates reports **from results** — you must produce `allure-res
 - Allure integrations: https://github.com/allure-framework
 
 The raw `allure-results` directory (the `*-result.json` / `*-container.json` files plus attachments) is what you upload to the service.
+
+### Adapter versions and history
+
+Any adapter that writes Allure 2 results works, and so does the Allure 1 XML format. History is a different matter. Allure 3 matches a test to its past runs by the `testCaseId` the adapter writes. Some adapter releases changed how that id is computed. If you upgrade across one of them, history breaks: every test shows up as `new`, its history panel starts empty, and a `history/seed` baseline built on the old version no longer matches. History from an Allure 2 installation is not imported either way.
+
+Pick a version at or above the last boundary before your first build here. After that, pin the exact version:
+
+| Adapter | Minimum | Identity changed in |
+|---|---|---|
+| `allure-pytest` + `allure-python-commons` | 2.8.0 | 2.8.0 (earlier versions write no `testCaseId`); unchanged 2.8.0 → 2.16.1 |
+| `allure-playwright` | 3.9.0 | 2.7.0 and 3.9.0 |
+| `allure-jest` | 3.9.0 | 3.0.0 and 3.9.0 |
+| `allure-vitest` | 3.9.0 | 2.12.1, 3.0.0 and 3.9.0 |
+
+Other adapters have not been checked. Their test identity may have changed at different versions.
+
+From 3.9, allure-js adapters include the `name` in `package.json` in a test's identity (verified with Jest). Renaming the package therefore breaks history too.
+
+Avoid `allure-vitest` 2.14.0 and 3.0.0–3.0.6. They write fractional-millisecond timestamps, and Allure 3.18's durations chart crashes on them. The CLI still exits 0 but leaves no `index.html`.
+
+Allure-js 3.9+ also writes the old id as a `_fallbackTestCaseId` label. Allure 3.18 reads that label only in its chart code. It does not restore a test's history or its `new` / `regressed` status. If you have already crossed a boundary, run `POST /projects/{id}/history/clean` so that old and new ids don't mix in one history.
 
 ## Configuration
 
@@ -212,7 +253,7 @@ curl -s http://localhost:5050/config
 # {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
 
 curl -s http://localhost:5050/version
-# {"allure_version":"3.16.0","service_version":"0.2.0"}
+# {"allure_version":"3.18.0","service_version":"0.2.0"}
 ```
 
 `/config` reports the subset of settings that actually influence behaviour. `/version` answers with both versions that describe a running container: `allure_version` is asked of the CLI itself (`allure --version`) at startup rather than read from a build-time file, and `service_version` is stamped into the binary when the image is built — a source build reports `dev`.
@@ -379,17 +420,6 @@ Three details make the difference between a pipeline that reports the truth and 
 - **The upload builds an argument array.** Interpolating a glob into the command line splits on spaces, so it breaks as soon as the workspace path has one — `/var/lib/jenkins/workspace/My Job/allure-results` is an ordinary path. An empty `allure-results` is the other case: with `nullglob` unset it sends the literal `*` as a file name and gets a `400`, instead of saying plainly that the tests produced nothing.
 
 The sequence is the same under any CI system; what changes is only the wrapper around it. In GitHub Actions it is a `run:` step in a job whose `services:` block runs the image; in GitLab CI a `script:` with the image under `services:`; on Jenkins a `sh` step. Any runner with `bash`, `curl` and `jq` can execute the block as written.
-
-## History and trends
-
-With `KEEP_HISTORY` enabled, every build appends a line to `<project>/history.jsonl` and archives the report under a numbered directory, so the next report can draw the "Status dynamics" trend widget — one bar per past run plus the current one.
-
-Bars of past runs are **clickable**: a click opens that run (`reports/{N}/`) in a new tab. No configuration needed — the service injects an Allure plugin that stamps each history entry with the address of its archive. Two caveats:
-
-- links only exist for runs built by a service version that has the plugin; older history lines have no address and their bars stay inert;
-- `KEEP_HISTORY_LATEST` trims archives and history together, so a link disappears along with its trend point rather than rotting into a 404.
-
-`POST /projects/{id}/history/clean` starts the history over, and `POST /projects/{id}/history/seed` replaces it with another project's.
 
 ## Opening the report
 
