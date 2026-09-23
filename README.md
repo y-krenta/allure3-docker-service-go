@@ -131,6 +131,21 @@ This service generates reports **from results** — you must produce `allure-res
 
 The raw `allure-results` directory (the `*-result.json` / `*-container.json` files plus attachments) is what you upload to the service.
 
+### Adapter versions and history
+
+Any adapter that writes Allure 2 results works, and so does the Allure 1 XML format. History is a different matter. Allure 3 matches a test to its past runs by the `testCaseId` the adapter writes. Some adapter releases changed how that id is computed. If you upgrade across one of them, history breaks: every test shows up as `new`, its history panel starts empty, and a `history/seed` baseline built on the old version no longer matches. History from an Allure 2 installation is not imported either way.
+
+Pick a version at or above the last boundary before your first build here. After that, pin the exact version:
+
+| Adapter | Minimum | Identity changed in |
+|---|---|---|
+| `allure-pytest` + `allure-python-commons` | 2.8.0 | 2.8.0 (earlier versions write no `testCaseId`); unchanged 2.8.0 → 2.16.1 |
+| `allure-playwright` | 3.9.0 | 2.7.0 and 3.9.0 |
+
+Other adapters have not been checked. Their test identity may have changed at different versions.
+
+Allure-js 3.9+ also writes the old id as a `_fallbackTestCaseId` label. Allure 3.18 reads that label only in its chart code. It does not restore a test's history or its `new` / `regressed` status. If you have already crossed a boundary, run `POST /projects/{id}/history/clean` so that old and new ids don't mix in one history.
+
 ## Configuration
 
 All configuration is environment variables; invalid values fall back to the default with a warning in the log.
