@@ -141,8 +141,14 @@ Pick a version at or above the last boundary before your first build here. After
 |---|---|---|
 | `allure-pytest` + `allure-python-commons` | 2.8.0 | 2.8.0 (earlier versions write no `testCaseId`); unchanged 2.8.0 → 2.16.1 |
 | `allure-playwright` | 3.9.0 | 2.7.0 and 3.9.0 |
+| `allure-jest` | 3.9.0 | 3.0.0 and 3.9.0 |
+| `allure-vitest` | 3.9.0 | 2.12.1, 3.0.0 and 3.9.0 |
 
 Other adapters have not been checked. Their test identity may have changed at different versions.
+
+From 3.9, allure-js adapters include the `name` in `package.json` in a test's identity (verified with Jest). Renaming the package therefore breaks history too.
+
+Avoid `allure-vitest` 2.14.0 and 3.0.0–3.0.6. They write fractional-millisecond timestamps, and Allure 3.18's durations chart crashes on them. The CLI still exits 0 but leaves no `index.html`.
 
 Allure-js 3.9+ also writes the old id as a `_fallbackTestCaseId` label. Allure 3.18 reads that label only in its chart code. It does not restore a test's history or its `new` / `regressed` status. If you have already crossed a boundary, run `POST /projects/{id}/history/clean` so that old and new ids don't mix in one history.
 
