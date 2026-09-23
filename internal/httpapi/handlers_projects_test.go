@@ -637,7 +637,6 @@ func TestServeProjectReport(t *testing.T) {
 }
 
 func TestLockWaitingHandlersLiftTheWriteDeadline(t *testing.T) {
-
 	cases := []struct {
 		name    string
 		method  string

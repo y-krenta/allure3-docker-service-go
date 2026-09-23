@@ -48,7 +48,7 @@ Allure turns the results of a test run into a report, but on its own it leaves t
 This service solves both. CI uploads a run's `allure-results` over HTTP, and the service builds an **Allure 3 (Awesome)** report and:
 
 - **publishes it at one stable URL per project** — `/projects/{id}/latest-report` always opens the newest run, and a failed build never replaces the last good report;
-- **keeps the project's history** — the trend charts span past runs (the last 60 by default), each test shows its own history, and every past run stays archived: a click on its bar in the chart opens it.
+- **keeps the project's history** — the trend charts span past runs, each test shows its own history, and each of those runs stays archived: a click on its bar in the chart opens it. Both the history and the archives are trimmed to the last `KEEP_HISTORY_LATEST` runs (60 by default), so a link disappears together with its bar; `KEEP_HISTORY=false` turns history off entirely. Bars of runs built before the service could link them (versions below 0.3.0) stay inert.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/images/report_main_dark.png">

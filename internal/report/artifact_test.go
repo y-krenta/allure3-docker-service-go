@@ -15,10 +15,6 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-//
-
-//
-
 func requireAllureCLI(t *testing.T) string {
 	t.Helper()
 
@@ -89,8 +85,6 @@ func generateTwice(t *testing.T) (dir, projectID string) {
 	return dir, projectID
 }
 
-//
-
 func buildReportWithHistory(t *testing.T) []foundURL {
 	t.Helper()
 
@@ -125,8 +119,6 @@ func buildReportWithHistory(t *testing.T) []foundURL {
 	return found
 }
 
-//
-
 func requireTestResultURLs(t *testing.T, found []foundURL) []string {
 	t.Helper()
 
@@ -150,8 +142,6 @@ func requireTestResultURLs(t *testing.T, found []foundURL) []string {
 	sort.Strings(urls)
 	return urls
 }
-
-//
 
 func urlsInJSONFile(t *testing.T, path string) []string {
 	t.Helper()
@@ -197,8 +187,6 @@ func urlsInJSONFile(t *testing.T, path string) []string {
 	}
 	return found
 }
-
-//
 
 func TestGeneratedReportCarriesOnlyAbsoluteURLs(t *testing.T) {
 	urls := requireTestResultURLs(t, buildReportWithHistory(t))
