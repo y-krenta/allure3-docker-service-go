@@ -234,11 +234,13 @@ func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Allure links a past run as <reportUrl>/awesome#<testId>, expecting a
-	// per-plugin directory our flattened report doesn't have, so history links
-	// arrive as "<n>/index.html/awesome". Location is relative so a proxy's
-	// path prefix survives (http.Redirect would make it absolute); the browser
-	// keeps the #testId.
+	// Reports built by Allure before 3.18 link a past run as
+	// <reportUrl>/awesome#<testId>, expecting a per-plugin directory our
+	// flattened report doesn't have, so their history links arrive as
+	// "<n>/index.html/awesome". 3.18 links <reportUrl>#<testId> directly; drop
+	// this once no archived report predates it. Location is relative so a
+	// proxy's path prefix survives (http.Redirect would make it absolute); the
+	// browser keeps the #testId.
 	if strings.HasSuffix(reportPath, "/index.html/awesome") {
 		w.Header().Set("Location", "../")
 		w.WriteHeader(http.StatusFound)
