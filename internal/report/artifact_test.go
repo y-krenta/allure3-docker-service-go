@@ -15,29 +15,10 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-// The tests in this file build a report with the real Allure CLI and then look
-// at what came out, which is the one thing the rest of the suite never does.
-// Every other test stops at the config or the executor file - at what this
-// service hands the CLI - and a value can be written there correctly and still
-// reach the browser wrong, or not reach it at all. That gap is exactly where
-// the relative-reportUrl defect lived: the config test was green, guarding the
-// very string that killed the page.
 //
-// Two builds, not one. A report with no history behind it never asks the
-// browser to construct a URL, so a single build is blind to the whole class of
-// defect by construction - which is why a stand of a hundred tests looked
-// healthy while production died.
-//
-// Where a url was found matters as much as its value. The project's
-// history.jsonl carries one at the top of every line, and a check satisfied by
-// that alone would pass on a single build and on a walk that never descends -
-// both verified by mutation, both silently blind to the file the dying page
-// actually reads. So the assertions below insist on urls from
-// data/test-results, which is where a test's history panel gets them.
 
-// requireAllureCLI returns the path to the real Allure CLI or skips the test.
-// These tests are about what the CLI produces, so there is nothing to stand in
-// for it: a fake CLI would only prove that the fake writes what it was told to.
+//
+
 func requireAllureCLI(t *testing.T) string {
 	t.Helper()
 
@@ -48,17 +29,8 @@ func requireAllureCLI(t *testing.T) string {
 	return path
 }
 
-// testStepName is written into every fixture result and asserted on by the
-// browser test. It has to be a step rather than the test's own name: the name
-// is printed in the tree on the left as well, so finding it proves only that
-// the report rendered something, while a step is shown by the test's page and
-// nowhere else.
 const testStepName = "the step only an opened test shows"
 
-// writeRealResult drops one result file the real CLI will accept into the
-// project's results dir. The minimal shape the rest of the suite uses is
-// enough for a fake CLI but not for Allure, which needs a uuid, a status and a
-// window of time before it will treat the file as a test at all.
 func writeRealResult(t *testing.T, baseDir, projectID string, n int) {
 	t.Helper()
 
@@ -89,16 +61,11 @@ func writeRealResult(t *testing.T, baseDir, projectID string, n int) {
 	}
 }
 
-// foundURL is one url together with the file it came from, because the
-// assertions care about both.
 type foundURL struct {
-	file string // path relative to the projects dir
+	file string
 	url  string
 }
 
-// generateTwice builds a project's report twice with the real CLI and returns
-// the projects dir and the project's id. Callers get a report that has history
-// behind it, which is the only kind that exercises the urls at all.
 func generateTwice(t *testing.T) (dir, projectID string) {
 	t.Helper()
 
@@ -122,12 +89,8 @@ func generateTwice(t *testing.T) (dir, projectID string) {
 	return dir, projectID
 }
 
-// buildReportWithHistory generates the project twice with the real CLI and
-// returns every url the finished report and the project's history carry.
 //
-// The second build is the point: the first one has nothing to look back on, so
-// its report holds no history entries and no trend, and none of the urls this
-// is about exist yet.
+
 func buildReportWithHistory(t *testing.T) []foundURL {
 	t.Helper()
 
@@ -162,13 +125,8 @@ func buildReportWithHistory(t *testing.T) []foundURL {
 	return found
 }
 
-// requireTestResultURLs fails unless the report's own test-result files carry
-// urls, and returns them together with everything else that was found.
 //
-// Without this the suite is one mutation away from proving nothing: a single
-// build, or a walk that reads only the top level of each document, still finds
-// the url at the head of every history.jsonl line and sails through every
-// assertion below.
+
 func requireTestResultURLs(t *testing.T, found []foundURL) []string {
 	t.Helper()
 
@@ -193,14 +151,8 @@ func requireTestResultURLs(t *testing.T, found []foundURL) []string {
 	return urls
 }
 
-// urlsInJSONFile returns every value stored under a "url" key in path, at any
-// depth. Depth is not a detail to skip: in history.jsonl the urls sit inside
-// each testResult rather than at the top level, so a walk that only reads the
-// outermost object sees a clean file and reports nothing.
 //
-// The file is decoded into any rather than a struct on purpose. A struct would
-// describe the shape this service expects, and the shape is the CLI's to
-// choose; the point here is to find urls wherever the CLI decided to put them.
+
 func urlsInJSONFile(t *testing.T, path string) []string {
 	t.Helper()
 
@@ -231,8 +183,6 @@ func urlsInJSONFile(t *testing.T, path string) []string {
 		}
 	}
 
-	// history.jsonl holds one object per line; the report's own files are
-	// each a single document.
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -240,9 +190,7 @@ func urlsInJSONFile(t *testing.T, path string) []string {
 		}
 		var doc any
 		if err := json.Unmarshal([]byte(line), &doc); err != nil {
-			// Not every .json file in a report is a document this cares
-			// about, and a file this cannot read is not a failure of the
-			// property under test.
+
 			return found
 		}
 		walk(doc)
@@ -250,16 +198,8 @@ func urlsInJSONFile(t *testing.T, path string) []string {
 	return found
 }
 
-// TestGeneratedReportCarriesOnlyAbsoluteURLs is the end-to-end form of the
-// defect that took production down: not "did we write the right string into
-// the config" but "is every url in the finished report one a browser can
-// resolve".
 //
-// It catches what the unit tests cannot. Those call reportURLFor,
-// writeAllureConfig and writeExecutor directly, handing each a valid base as
-// an argument, so a Generator that accepts a base and then loses it - a field
-// never assigned, a value never threaded through - leaves every one of them
-// green. Here the base only ever enters through New.
+
 func TestGeneratedReportCarriesOnlyAbsoluteURLs(t *testing.T) {
 	urls := requireTestResultURLs(t, buildReportWithHistory(t))
 
@@ -270,11 +210,6 @@ func TestGeneratedReportCarriesOnlyAbsoluteURLs(t *testing.T) {
 	}
 }
 
-// TestGeneratedReportURLsSurviveNewURL asks the engine that does the
-// rejecting. Go's url.Parse accepts "../4/index.html" without an error, so no
-// assertion written in Go can tell a healthy url from the one that unmounted
-// the report; new URL() is what the report's frontend actually calls, and what
-// throws.
 func TestGeneratedReportURLsSurviveNewURL(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -301,5 +236,60 @@ func TestGeneratedReportURLsSurviveNewURL(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(out)); got != "ok" {
 		t.Errorf("harness said %q, want ok", got)
+	}
+}
+
+func TestGeneratedHistoryLinksOpenThePastReport(t *testing.T) {
+	dir, projectID := generateTwice(t)
+
+	entries, err := os.ReadDir(filepath.Join(projects.NumberedReportDir(dir, projectID, 1), "data", "test-results"))
+	if err != nil {
+		t.Fatalf("reading build 1's test results: %v", err)
+	}
+	pastIDs := map[string]bool{}
+	for _, e := range entries {
+		pastIDs[strings.TrimSuffix(e.Name(), ".json")] = true
+	}
+
+	prefix := reportURLFor(testBaseURL, projectID, 1) + "#"
+	links := 0
+	latest := filepath.Join(projects.LatestReportDir(dir, projectID), "data", "test-results")
+	err = filepath.WalkDir(latest, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() || !strings.HasSuffix(path, ".json") {
+			return nil
+		}
+		for _, u := range urlsInJSONFile(t, path) {
+			links++
+			if id, ok := strings.CutPrefix(u, prefix); !ok || !pastIDs[id] {
+				t.Errorf("%s: history link %q, want %s<id of a test in build 1>", filepath.Base(path), u, prefix)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking build 2's test results: %v", err)
+	}
+	if links == 0 {
+		t.Fatal("no history links in build 2's test results")
+	}
+
+	want := map[string]bool{
+		reportURLFor(testBaseURL, projectID, 1): false,
+		reportURLFor(testBaseURL, projectID, 2): false,
+	}
+	for _, u := range urlsInJSONFile(t, projects.HistoryFile(dir, projectID)) {
+		if _, ok := want[u]; !ok {
+			t.Errorf("history.jsonl url %q, want one of the two builds' report urls", u)
+			continue
+		}
+		want[u] = true
+	}
+	for u, seen := range want {
+		if !seen {
+			t.Errorf("history.jsonl has no entry for %q", u)
+		}
 	}
 }

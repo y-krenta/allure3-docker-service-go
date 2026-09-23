@@ -503,8 +503,11 @@ func TestServeProjectReport(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
-		defer resp.Body.Close()
-		body, _ := io.ReadAll(resp.Body)
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("reading body: %v", err)
+		}
 
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want %d (body: %s)", resp.StatusCode, http.StatusOK, body)
