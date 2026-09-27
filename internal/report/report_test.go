@@ -88,7 +88,7 @@ func readFile(t *testing.T, path string) []byte {
 
 const testHistoryLimit = 7
 
-const testBaseURL = "https:allure.example.test"
+const testBaseURL = "https://allure.example.test"
 
 func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Generator {
 	t.Helper()
@@ -628,7 +628,7 @@ func TestReportURLPluginSetsTheReportURL(t *testing.T) {
 
 	harness := filepath.Join(dir, "harness.mjs")
 	body := "import Plugin from " + strconv.Quote(pluginPath) + ";\n" +
-		"const plugin = new Plugin({ url: \"https:allure.example.test/projects/demo/reports/7/index.html\" });\n" +
+		"const plugin = new Plugin({ url: \"https://allure.example.test/projects/demo/reports/7/index.html\" });\n" +
 		"const context = {};\n" +
 		"await plugin.start(context);\n" +
 		"console.log(context.reportUrl);\n"
@@ -640,7 +640,7 @@ func TestReportURLPluginSetsTheReportURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("running the plugin: %v\n%s", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "https:allure.example.test/projects/demo/reports/7/index.html" {
+	if got := strings.TrimSpace(string(out)); got != "https://allure.example.test/projects/demo/reports/7/index.html" {
 		t.Errorf("context.reportUrl = %q, want the url the plugin was given", got)
 	}
 }
