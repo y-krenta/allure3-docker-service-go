@@ -408,6 +408,10 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 		return fmt.Errorf("running allure: %w", err)
 	}
 
+	if _, err := os.Stat(filepath.Join(outDir, "index.html")); err != nil {
+		return fmt.Errorf("allure produced no index.html: %w", err)
+	}
+
 	latest := projects.LatestReportDir(g.projectsDir, projectID)
 	old := filepath.Join(tmp, "old")
 
