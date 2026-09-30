@@ -1,10 +1,14 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -228,6 +232,30 @@ func TestSweepKeepsFingerprintWhenAlreadyRunning(t *testing.T) {
 	// build would never be published.
 	if got := rec.calls(); len(got) != 2 {
 		t.Errorf("calls = %v, want the refused change to be retried on the next tick", got)
+	}
+}
+
+// A build already in flight is the normal case when CI POSTs /generation and
+// the watcher notices the same upload: nothing is wrong, and the change is
+// retried next tick. Logging it as an error would page someone every few
+// seconds for as long as the build runs.
+func TestSweepDoesNotLogAlreadyRunningAsAnError(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	root := t.TempDir()
+	writeResult(t, root, "proj", "a-result.json", "{}")
+	rec := &recorder{err: fmt.Errorf("%w: proj", report.ErrAlreadyRunning)}
+	seen := map[string]fingerprint{}
+
+	sweep(context.Background(), root, seen, rec.start, true)
+	writeResult(t, root, "proj", "b-result.json", "{}")
+	sweep(context.Background(), root, seen, rec.start, false)
+
+	if strings.Contains(logs.String(), "level=ERROR") {
+		t.Errorf("a refused duplicate was logged as an error:\n%s", logs.String())
 	}
 }
 

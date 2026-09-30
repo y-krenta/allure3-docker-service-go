@@ -189,7 +189,7 @@ All configuration is environment variables; invalid values fall back to the defa
 | `KEEP_HISTORY` | `true` | Accumulate run history between builds. `false` means **erase**: the history limit collapses to `0` and `history.jsonl` is truncated on every build |
 | `KEEP_HISTORY_LATEST` | `60` | How many past runs to keep — the same number of points in the trend chart, and the same number of archived reports |
 | `CHECK_RESULTS_EVERY_SECONDS` | `0` | Watcher interval. `0` disables it; reports are then built only via the API |
-| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. One more is refused with `503` and `Retry-After`, never queued. Values below `1` mean `1`. See [Resource limits](#resource-limits) |
+| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. More are accepted and wait for a free slot, reading `running` meanwhile. Values below `1` mean `1`. See [Resource limits](#resource-limits) |
 | `BUILD_HEAP_MB` | `2048` | V8 old-space cap of one build, in MiB (`--max-old-space-size`) — enough for ~10 000 tests with 60 runs of history. `0` leaves it to Node. See [Resource limits](#resource-limits) |
 
 The effective limits are printed at startup as `history limit N, max concurrent builds K, build heap H MB`.
@@ -209,7 +209,7 @@ A watcher build refused for lack of a slot is retried on the next sweep.
 
 Every build is a separate `allure generate` process — Node — and its memory grows with the number of tests and, above all, with history. Uploads stream to disk and the Go service itself idles at ~50 MB, so the footprint is *builds running at once × memory of one build*. The service limits the two factors it controls — build concurrency and V8 old space — while the container provides the hard resource ceiling:
 
-- `MAX_CONCURRENT_BUILDS` (4) caps the number of builds. It is an operational trade-off, not a measured optimum: a 10 000-test build takes ~20 s, so four slots pass about 12 such builds a minute, and a build requested while all four are busy gets `503` with `Retry-After` rather than a place in a queue. Raising it to 6 is fine as throughput tuning, but it raises the memory and CPU demand along with it.
+- `MAX_CONCURRENT_BUILDS` (4) caps the number of builds. It is an operational trade-off, not a measured optimum: a 10 000-test build takes ~20 s, so four slots pass about 12 such builds a minute, and a build requested while all four are busy is accepted and waits for a slot. The queue holds at most one build per project, since a second request for a project that is already building gets `409`; the 10-minute build timeout starts only once the slot is taken. Raising it to 6 is fine as throughput tuning, but it raises the memory and CPU demand along with it.
 - `BUILD_HEAP_MB` (2048) caps each build's V8 old space, in MiB — the service hands it to the CLI as `--max-old-space-size`, after any `NODE_OPTIONS` of your own, so it always wins. 10 000 tests pass with 1536 MiB, but the heap was searched in 512 MiB steps: all that is known is that 1024 is too little and 1536 is enough, so 2048 is the margin. Old space is not the whole process — the young generation, buffers and native memory come on top, ~300 MiB per build.
 
 Out of the box, four concurrent builds are estimated at 4 × (2048 + ~300 MiB) ≈ 9.2 GiB of build memory. Measured with those defaults and no CPU limit, four parallel 10 000-test builds peaked at 6.4 GiB in the build processes and at 7.8 GiB in the container's cgroup, page cache included; nothing was OOM-killed, and the run took 56 s at 7.5 cores on average. CPU is not capped by the service: a 10 000-test build averages 2.3 cores, and the 7.5 is load observed on a 12-core host, not a limit or a worst case.
@@ -242,7 +242,7 @@ When a limit is hit, it shows up in three places:
 
 - **the build's status** — `state: "failed"` with `JavaScript heap out of memory` in `error` when `BUILD_HEAP_MB` was too small, or `signal: killed` when the container's memory limit was;
 - **Docker** — `docker events --filter event=oom` reports the container, and `docker inspect -f '{{.State.OOMKilled}}' <container>` turns `true`, even though only the build was killed and the service kept running;
-- **`503` answers** — builds are arriving faster than the slots free up.
+- **builds that stay `running` well past their usual time** — they are waiting for a slot: builds are arriving faster than the slots free up.
 
 `docker stats` shows current usage against the limit. Hitting a limit once is the ceiling doing its job; hitting it regularly means the project outgrew the defaults — raise `BUILD_HEAP_MB` and the memory limit together.
 
@@ -385,7 +385,7 @@ Two notable refusals, both `409`:
 - **a build of this project is already running.** The running build may have started *before* your results were uploaded, so it is not silently reused. Poll until the state leaves `running`, then `POST` again.
 - **the results directory is empty.** Allure would happily build an empty report and publishing it would erase the last good one.
 
-And one `503`: **`MAX_CONCURRENT_BUILDS` builds are already running**, across all projects. It carries `Retry-After: 30`; nothing is queued, so `POST` again after that. `history/clean` answers the same `503` when the history was cleared but the rebuild found no free slot — `POST /generation` then builds on the cleared history.
+A busy service is not a refusal: when **`MAX_CONCURRENT_BUILDS` builds are already running**, across all projects, the build is still accepted with `202` and waits for a free slot, its state reading `running` all the while. The 10-minute build timeout starts only once it has the slot.
 
 The status registry lives **in memory only**: after a restart it is empty, so a project with a report on disk still answers `404` here.
 
@@ -453,13 +453,12 @@ for f in ./allure-results/*; do upload+=(-F "files[]=@$f"); done
 [ ${#upload[@]} -gt 0 ] || { echo "no results were produced"; exit 1; }
 curl -sf -X POST "$BASE/results" "${upload[@]}"
 
-# 4. start the build; --retry waits out a 503 (every build slot busy),
-#    honouring its Retry-After — up to 20 × 30 s
-curl -sf --retry 20 -X POST "$BASE/generation"
+# 4. start the build; with every build slot busy it is queued, not refused
+curl -sf -X POST "$BASE/generation"
 
-# 5. wait for the outcome — 300 × 2 s = 10 minutes, the service's own
-#    build timeout, so the loop never gives up on a build still running
-for _ in $(seq 300); do
+# 5. wait for the outcome — 600 × 2 s = 20 minutes: room for a wait in the
+#    queue plus the service's own 10-minute build timeout
+for _ in $(seq 600); do
   state=$(curl -sf "$BASE/generation" | jq -r .state)
   [ "$state" = running ] || break
   sleep 2
@@ -471,7 +470,7 @@ Cleaning is what makes a report represent exactly one execution. If the project 
 
 Four details make the difference between a pipeline that reports the truth and one that looks green regardless:
 
-- **A busy service is waited out, not failed on.** The service runs at most `MAX_CONCURRENT_BUILDS` builds at once across all projects and refuses the next one with `503` instead of queueing it. `curl --retry` repeats the `POST` after the `Retry-After` delay; without it the step fails whenever other projects happen to be building.
+- **The wait covers the queue as well as the build.** The service runs at most `MAX_CONCURRENT_BUILDS` builds at once across all projects; the next one is accepted and waits for a slot, reading `running` meanwhile. A loop sized for the 10-minute build timeout alone would give up on a build that has not started yet.
 - **The wait is bounded.** A build that hangs, or a service restarted mid-build, would otherwise keep an unbounded loop spinning until the CI job's own timeout burns the runner's budget.
 - **The last line decides the job's exit code.** `POST /generation` answering `202` means the build was accepted, not that it succeeded, and `GET /generation` returns `200` even when it reports `state: "failed"` — the status read worked, only the build did not. Without that final check the step passes on a failed report. The body printed on failure carries the CLI's message in `error`.
 - **The upload builds an argument array.** Interpolating a glob into the command line splits on spaces, so it breaks as soon as the workspace path has one — `/var/lib/jenkins/workspace/My Job/allure-results` is an ordinary path. An empty `allure-results` is the other case: with `nullglob` unset it sends the literal `*` as a file name and gets a `400`, instead of saying plainly that the tests produced nothing.
@@ -531,15 +530,13 @@ stage('Allure report') {
 
 | Answer | Meaning | What the pipeline should do |
 |---|---|---|
-| `503` on `POST /generation` | Every build slot is taken, by any projects | Retry after `Retry-After` — `curl --retry` does it |
 | `409` "already running" on `POST /generation` | This project is already building | Nothing to retry: the lock is missing, or a build was started outside CI (the watcher, a manual call) |
 | `409` "no results" on `POST /generation` | `results/` is empty | Fail: the upload sent nothing |
 | `404` on any project URL | The project does not exist | `POST /projects` first |
-| `503` on `POST /history/clean` | History cleared, rebuild not started | `POST /generation` with `--retry`; it builds on the cleared history |
 | `state: "failed"` | The build ran and failed; `error` has the CLI's message | Fail. `JavaScript heap out of memory` there means the project outgrew `BUILD_HEAP_MB` — see [Resource limits](#resource-limits) |
 | `404` on `GET /generation` mid-wait | The service restarted and forgot the build | Rerun the report step |
 
-Size the CI job's timeout for the worst case: waiting for the lock, plus up to 10 minutes of `503` retries, plus up to 10 minutes of build.
+Size the CI job's timeout for the worst case: waiting for the lock, plus the wait for a build slot, plus up to 10 minutes of build.
 
 ## Opening the report
 

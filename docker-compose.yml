@@ -33,8 +33,7 @@ services:
       KEEP_HISTORY_LATEST: 60
       # 0 - the watcher is off, reports are built on request only.
       CHECK_RESULTS_EVERY_SECONDS: 0
-      # Builds running at once across all projects; one more is refused with
-      # 503 and Retry-After instead of being queued.
+      # Builds running at once across all projects; more wait for a free slot.
       MAX_CONCURRENT_BUILDS: 4
       # V8 old-space cap per build in MiB (--max-old-space-size), enough for ~10k
       # tests with 60 runs of history.

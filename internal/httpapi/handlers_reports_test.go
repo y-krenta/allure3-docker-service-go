@@ -110,7 +110,6 @@ func TestStartGeneration(t *testing.T) {
 		}{
 			{"unknown project", fmt.Errorf("%w: demo", report.ErrProjectNotFound), http.StatusNotFound},
 			{"build already running", fmt.Errorf("%w: demo", report.ErrAlreadyRunning), http.StatusConflict},
-			{"every build slot taken", fmt.Errorf("%w: demo", report.ErrBusy), http.StatusServiceUnavailable},
 			{"nothing to build from", fmt.Errorf("%w: demo", report.ErrNoResults), http.StatusConflict},
 			{"anything else", errors.New("disk on fire"), http.StatusInternalServerError},
 		}
@@ -126,19 +125,6 @@ func TestStartGeneration(t *testing.T) {
 					t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.want, w.Body)
 				}
 			})
-		}
-	})
-
-	// A 503 without Retry-After leaves a CI client guessing; curl --retry
-	// honours the header, so it is what spaces the retries out.
-	t.Run("busy tells the client when to retry", func(t *testing.T) {
-		s := newStubServer(&stubGenerator{startErr: fmt.Errorf("%w: demo", report.ErrBusy)})
-
-		w := callWithPath(s.startGeneration, http.MethodPost, "/projects/demo/generation",
-			nil, map[string]string{"id": "demo"})
-
-		if got := w.Header().Get("Retry-After"); got != "30" {
-			t.Errorf("Retry-After = %q, want %q", got, "30")
 		}
 	})
 
@@ -330,7 +316,6 @@ func TestClearHistory(t *testing.T) {
 		}{
 			{"unknown project", fmt.Errorf("%w: demo", report.ErrProjectNotFound), http.StatusNotFound},
 			{"build already running", fmt.Errorf("%w: demo", report.ErrAlreadyRunning), http.StatusConflict},
-			{"every build slot taken", fmt.Errorf("%w: demo", report.ErrBusy), http.StatusServiceUnavailable},
 			{"nothing to build from", fmt.Errorf("%w: demo", report.ErrNoResults), http.StatusConflict},
 			{"anything else", errors.New("disk on fire"), http.StatusInternalServerError},
 		}
@@ -346,17 +331,6 @@ func TestClearHistory(t *testing.T) {
 					t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.want, w.Body)
 				}
 			})
-		}
-	})
-
-	t.Run("busy tells the client when to retry", func(t *testing.T) {
-		s := newStubServer(&stubGenerator{clearHistoryErr: fmt.Errorf("%w: demo", report.ErrBusy)})
-
-		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
-			nil, map[string]string{"id": "demo"})
-
-		if got := w.Header().Get("Retry-After"); got != "30" {
-			t.Errorf("Retry-After = %q, want %q", got, "30")
 		}
 	})
 

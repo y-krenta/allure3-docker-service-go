@@ -1186,51 +1186,110 @@ func TestStartReturnsBeforeTheBuildFinishes(t *testing.T) {
 	waitForState(t, g, "demo", StateSucceeded)
 }
 
-func TestStartRejectsWhenAllSlotsAreTaken(t *testing.T) {
-	g := newTestGenerator(t, fakeCLI(t, cliSlow), "a", "b")
-	g.slots = make(chan struct{}, 1)
-
-	if err := g.Start(t.Context(), "a"); err != nil {
-		t.Fatalf("Start(a) = %v, want nil", err)
-	}
-	if err := g.Start(t.Context(), "b"); !errors.Is(err, ErrBusy) {
-		t.Fatalf("Start(b) with the only slot taken = %v, want ErrBusy", err)
-	}
-	if _, ok := g.Status("b"); ok {
-		t.Error("a refused build left a status behind")
-	}
-
-	// The slot is freed before the status says succeeded, so a caller that
-	// waits for the build to finish can start the next one straight away.
-	waitForState(t, g, "a", StateSucceeded)
-	if err := g.Start(t.Context(), "b"); err != nil {
-		t.Fatalf("Start(b) after a finished = %v, want nil", err)
-	}
-	waitForState(t, g, "b", StateSucceeded)
+// cliExclusive is a slow CLI that fails if another copy of itself is running:
+// mkdir is atomic, so the second of two overlapping builds cannot create
+// lockDir and exits non-zero. It turns "the builds overlapped" into a failed
+// build instead of a timing measurement.
+func cliExclusive(lockDir string) string {
+	return "#!/bin/sh\nmkdir \"" + lockDir + "\" || exit 1\nsleep 0.5\n" +
+		"printf 'fresh' > \"$4/index.html\"\nrmdir \"" + lockDir + "\"\n"
 }
 
-func TestStartReleasesTheSlotOfARejectedDuplicate(t *testing.T) {
-	g := newTestGenerator(t, fakeCLI(t, cliSlow), "a", "b")
-	g.slots = make(chan struct{}, 2)
+// waitUntilFinished waits for projectID's build to leave StateRunning, and
+// returns its final status whichever way it went, so a test can report a
+// failed build as such instead of timing out waiting for a success.
+func waitUntilFinished(t *testing.T, g *Generator, projectID string) Status {
+	t.Helper()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		st, ok := g.Status(projectID)
+		if ok && st.State != StateRunning {
+			return st
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	st, ok := g.Status(projectID)
+	t.Fatalf("build of %q never finished (last: %+v, exists=%v)", projectID, st, ok)
+	return Status{}
+}
+
+func TestStartQueuesWhenAllSlotsAreTaken(t *testing.T) {
+	cli := fakeCLI(t, cliExclusive(filepath.Join(t.TempDir(), "running")))
+	g := newTestGenerator(t, cli, "a", "b")
+	g.slots = make(chan struct{}, 1)
+
+	for _, id := range []string{"a", "b"} {
+		if err := g.Start(t.Context(), id); err != nil {
+			t.Fatalf("Start(%s) = %v, want nil - a full generator queues, it does not refuse", id, err)
+		}
+	}
+	// Accepted means running from the caller's side, queued or not.
+	if st, _ := g.Status("b"); st.State != StateRunning {
+		t.Errorf("status of the queued build = %q, want %q", st.State, StateRunning)
+	}
+
+	for _, id := range []string{"a", "b"} {
+		if st := waitUntilFinished(t, g, id); st.State != StateSucceeded {
+			t.Errorf("build of %s = %q (%v), want %q - with one slot the builds must not overlap",
+				id, st.State, st.Err, StateSucceeded)
+		}
+	}
+}
+
+// An export holds the project's lock for as long as its client takes to read
+// the zip. A build waiting behind it must not sit on a slot meanwhile, or the
+// other projects queue behind a build that is doing nothing.
+func TestBuildWaitingForItsProjectHoldsNoSlot(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "a", "b")
+	g.slots = make(chan struct{}, 1)
+
+	lock := g.lockFor("a")
+	lock.Lock() // stands in for an export of a
 
 	if err := g.Start(t.Context(), "a"); err != nil {
 		t.Fatalf("Start(a) = %v, want nil", err)
 	}
-	if err := g.Start(t.Context(), "a"); !errors.Is(err, ErrAlreadyRunning) {
-		t.Fatalf("second Start(a) = %v, want ErrAlreadyRunning", err)
-	}
+	// Give a's build time to get as far as it can - the project lock - so
+	// that if it took the slot on the way, it holds it by now.
+	time.Sleep(100 * time.Millisecond)
+
 	if err := g.Start(t.Context(), "b"); err != nil {
-		t.Fatalf("Start(b) = %v, want nil - the duplicate must give its slot back", err)
+		t.Fatalf("Start(b) = %v, want nil", err)
 	}
+	if st := waitUntilFinished(t, g, "b"); st.State != StateSucceeded {
+		t.Fatalf("build of b = %q (%v), want %q", st.State, st.Err, StateSucceeded)
+	}
+
+	lock.Unlock()
 	waitForState(t, g, "a", StateSucceeded)
-	waitForState(t, g, "b", StateSucceeded)
+}
+
+// The cap lives in Generate, so a direct call obeys it as well as one made
+// through Start: with every slot taken it waits, and gives up only when its
+// context does.
+func TestGenerateWaitsForASlotUntilItsContextEnds(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
+	g.slots = make(chan struct{}, 1)
+	g.slots <- struct{}{} // the only slot, taken by a build elsewhere
+
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+
+	if err := g.Generate(ctx, "demo"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Generate with no free slot = %v, want context.DeadlineExceeded", err)
+	}
+	if _, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a build that never got a slot published a report (stat err = %v)", err)
+	}
 }
 
 func TestNewTreatsNoSlotsAsOne(t *testing.T) {
 	g := New(t.TempDir(), "unused-cli", testHistoryLimit, testBaseURL, 0, 0)
 
 	if got := cap(g.slots); got != 1 {
-		t.Errorf("slots = %d, want 1 - with none, every build would be refused as busy", got)
+		t.Errorf("slots = %d, want 1 - with none, every build would wait forever", got)
 	}
 }
 
