@@ -34,7 +34,8 @@ type generationStatusResponse struct {
 //
 // Responds 202 with no body on success, 400 if id fails
 // projects.ValidateProjectID, 404 if the project has no results directory, and
-// 409 if a build for that project is already in flight. The 409 is deliberate:
+// 409 if a build for that project is already in flight, and 503 with
+// Retry-After if every build slot is taken. The 409 is deliberate:
 // the running build may have started before this caller uploaded its results,
 // so reporting it as accepted would promise a report that never includes them.
 // Any other failure is logged and reported as 500 without detail.
@@ -56,6 +57,11 @@ func (s *Server) startGeneration(w http.ResponseWriter, r *http.Request) {
 
 	case errors.Is(err, report.ErrNoResults):
 		http.Error(w, "project has no results to generate a report from", http.StatusConflict)
+		return
+
+	case errors.Is(err, report.ErrBusy):
+		w.Header().Set("Retry-After", "30")
+		http.Error(w, "all build slots are busy, retry later", http.StatusServiceUnavailable)
 		return
 
 	case err != nil:
@@ -109,7 +115,9 @@ func (s *Server) generationStatus(w http.ResponseWriter, r *http.Request) {
 //
 // Responds 400 if id fails projects.ValidateProjectID, 404 if the project
 // has no results directory, 409 if a build for that project is already in
-// flight or its results directory is empty, and 500 for any other failure.
+// flight or its results directory is empty, 503 with Retry-After if the
+// history was cleared but every build slot is taken, and 500 for any other
+// failure.
 func (s *Server) clearHistory(w http.ResponseWriter, r *http.Request) {
 	id, ok := requireProjectID(w, r)
 	if !ok {
@@ -128,6 +136,12 @@ func (s *Server) clearHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, report.ErrAlreadyRunning):
 		http.Error(w, "report generation is already running", http.StatusConflict)
+		return
+	case errors.Is(err, report.ErrBusy):
+		w.Header().Set("Retry-After", "30")
+		http.Error(w,
+			"history cleared, but all build slots are busy; start the generation later",
+			http.StatusServiceUnavailable)
 		return
 	case err != nil:
 		slog.Error("failed to clear history", "err", err, "project_id", id)

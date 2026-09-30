@@ -103,8 +103,8 @@ func main() {
 	if !cfg.KeepHistory {
 		historyLimit = 0
 	}
-	log.Printf("history limit %d", historyLimit)
-	reports := report.New(cfg.ProjectsDir, cfg.AllureBin, historyLimit, baseURL)
+	log.Printf("history limit %d, max concurrent builds %d, build heap %d MB", historyLimit, cfg.MaxConcurrentBuilds, cfg.BuildHeapMB)
+	reports := report.New(cfg.ProjectsDir, cfg.AllureBin, historyLimit, baseURL, cfg.MaxConcurrentBuilds, cfg.BuildHeapMB)
 
 	versionCtx, cancelVersion := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelVersion()

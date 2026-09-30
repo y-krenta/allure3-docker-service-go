@@ -90,6 +90,8 @@ const testHistoryLimit = 7
 
 const testBaseURL = "https://allure.example.test"
 
+const testMaxBuilds = 4
+
 func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Generator {
 	t.Helper()
 
@@ -100,7 +102,7 @@ func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Gen
 		}
 		writeResult(t, dir, id)
 	}
-	return New(dir, allureBin, testHistoryLimit, testBaseURL)
+	return New(dir, allureBin, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 }
 
 func writeResult(t *testing.T, baseDir, projectID string) {
@@ -191,7 +193,7 @@ func TestEmptyResultsDirIsRefused(t *testing.T) {
 		if err := projects.CreateDir(dir, "demo"); err != nil {
 			t.Fatalf("CreateDir: %v", err)
 		}
-		return New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL)
+		return New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 	}
 
 	t.Run("Generate", func(t *testing.T) {
@@ -352,7 +354,7 @@ func TestGenerateRejectsReportWithoutIndex(t *testing.T) {
 			t.Errorf("history exists (err = %v), want nothing published", err)
 		}
 
-		retry := New(g.projectsDir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL)
+		retry := New(g.projectsDir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 		if err := retry.Generate(t.Context(), "demo"); err != nil {
 			t.Fatalf("Generate after the failed build = %v, want nil", err)
 		}
@@ -460,6 +462,23 @@ func TestRunAllureRunsTheCLIFromANeutralDirectory(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("CLI ran in %q, want the neutral %q - anything else lets git metadata leak into the report", got, want)
+	}
+}
+
+func TestRunAllureCapsTheBuildHeap(t *testing.T) {
+	t.Setenv("NODE_OPTIONS", "--max-old-space-size=9999")
+	dump := filepath.Join(t.TempDir(), "node-options")
+	cli := "#!/bin/sh\nprintf '%s' \"$NODE_OPTIONS\" > \"" + dump + "\"\nprintf 'fresh' > \"$4/index.html\"\n"
+	g := newTestGenerator(t, fakeCLI(t, cli), "demo")
+	g.heapMB = 512
+
+	if err := g.Generate(t.Context(), "demo"); err != nil {
+		t.Fatalf("Generate = %v, want nil", err)
+	}
+
+	got := string(readFile(t, dump))
+	if want := "--max-old-space-size=9999 --max-old-space-size=512"; got != want {
+		t.Errorf("NODE_OPTIONS = %q, want %q - the cap has to come last to win", got, want)
 	}
 }
 
@@ -946,7 +965,7 @@ func TestPruneReportsKeepsAllWhenUnderTheLimit(t *testing.T) {
 	if err := projects.CreateDir(dir, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	g := New(dir, "unused-cli", 3, testBaseURL)
+	g := New(dir, "unused-cli", 3, testBaseURL, testMaxBuilds, 0)
 
 	reports := projects.ReportsDir(dir, "demo")
 	for _, name := range []string{"1", "2"} {
@@ -971,7 +990,7 @@ func TestPruneReportsDeletesOldestByNumber(t *testing.T) {
 	if err := projects.CreateDir(dir, "demo"); err != nil {
 		t.Fatal(err)
 	}
-	g := New(dir, "unused-cli", 3, testBaseURL)
+	g := New(dir, "unused-cli", 3, testBaseURL, testMaxBuilds, 0)
 
 	reports := projects.ReportsDir(dir, "demo")
 
@@ -999,7 +1018,7 @@ func TestPruneReportsDeletesOldestByNumber(t *testing.T) {
 
 func TestPruneReportsReadDirErrorPropagates(t *testing.T) {
 	dir := t.TempDir()
-	g := New(dir, "unused-cli", 3, testBaseURL)
+	g := New(dir, "unused-cli", 3, testBaseURL, testMaxBuilds, 0)
 
 	if err := g.pruneReports("missing"); err == nil {
 		t.Fatal("pruneReports = nil, want an error when the reports directory can't be read")
@@ -1012,7 +1031,7 @@ func TestGenerateContinuesWhenPruneReportsFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeResult(t, dir, "demo")
-	g := New(dir, "unused-cli", testHistoryLimit, testBaseURL)
+	g := New(dir, "unused-cli", testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	reports := projects.ReportsDir(dir, "demo")
 
@@ -1167,6 +1186,54 @@ func TestStartReturnsBeforeTheBuildFinishes(t *testing.T) {
 	waitForState(t, g, "demo", StateSucceeded)
 }
 
+func TestStartRejectsWhenAllSlotsAreTaken(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliSlow), "a", "b")
+	g.slots = make(chan struct{}, 1)
+
+	if err := g.Start(t.Context(), "a"); err != nil {
+		t.Fatalf("Start(a) = %v, want nil", err)
+	}
+	if err := g.Start(t.Context(), "b"); !errors.Is(err, ErrBusy) {
+		t.Fatalf("Start(b) with the only slot taken = %v, want ErrBusy", err)
+	}
+	if _, ok := g.Status("b"); ok {
+		t.Error("a refused build left a status behind")
+	}
+
+	// The slot is freed before the status says succeeded, so a caller that
+	// waits for the build to finish can start the next one straight away.
+	waitForState(t, g, "a", StateSucceeded)
+	if err := g.Start(t.Context(), "b"); err != nil {
+		t.Fatalf("Start(b) after a finished = %v, want nil", err)
+	}
+	waitForState(t, g, "b", StateSucceeded)
+}
+
+func TestStartReleasesTheSlotOfARejectedDuplicate(t *testing.T) {
+	g := newTestGenerator(t, fakeCLI(t, cliSlow), "a", "b")
+	g.slots = make(chan struct{}, 2)
+
+	if err := g.Start(t.Context(), "a"); err != nil {
+		t.Fatalf("Start(a) = %v, want nil", err)
+	}
+	if err := g.Start(t.Context(), "a"); !errors.Is(err, ErrAlreadyRunning) {
+		t.Fatalf("second Start(a) = %v, want ErrAlreadyRunning", err)
+	}
+	if err := g.Start(t.Context(), "b"); err != nil {
+		t.Fatalf("Start(b) = %v, want nil - the duplicate must give its slot back", err)
+	}
+	waitForState(t, g, "a", StateSucceeded)
+	waitForState(t, g, "b", StateSucceeded)
+}
+
+func TestNewTreatsNoSlotsAsOne(t *testing.T) {
+	g := New(t.TempDir(), "unused-cli", testHistoryLimit, testBaseURL, 0, 0)
+
+	if got := cap(g.slots); got != 1 {
+		t.Errorf("slots = %d, want 1 - with none, every build would be refused as busy", got)
+	}
+}
+
 func TestStartRecordsSuccessAndPublishesReport(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
@@ -1230,7 +1297,7 @@ func TestTryStartClaimsExactlyOnceUnderConcurrency(t *testing.T) {
 	const rounds, callers = 200, 40
 
 	for round := range rounds {
-		g := New("unused-dir", "unused-cli", testHistoryLimit, testBaseURL)
+		g := New("unused-dir", "unused-cli", testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 		var ready, done sync.WaitGroup
 		ready.Add(callers)
@@ -1438,7 +1505,7 @@ func TestClearHistoryRefusesWhenResultsAreEmpty(t *testing.T) {
 	if err := projects.CreateDir(dir, "demo"); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	g := New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL)
+	g := New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	err := g.ClearHistory(t.Context(), "demo")
 	if !errors.Is(err, ErrNoResults) {

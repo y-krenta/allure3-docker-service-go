@@ -12,7 +12,7 @@ func TestLoadDefaults(t *testing.T) {
 	for _, key := range []string{
 		"PORT", "SECURITY_ENABLED", "KEEP_HISTORY", "KEEP_HISTORY_LATEST",
 		"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
-		"STATIC_CONTENT_PROJECTS", "ALLURE_BIN",
+		"STATIC_CONTENT_PROJECTS", "ALLURE_BIN", "MAX_CONCURRENT_BUILDS", "BUILD_HEAP_MB",
 	} {
 		t.Setenv(key, "")
 	}
@@ -30,6 +30,8 @@ func TestLoadDefaults(t *testing.T) {
 		DevMode:              false,
 		ProjectsDir:          "/app/projects",
 		AllureBin:            "allure",
+		MaxConcurrentBuilds:  4,
+		BuildHeapMB:          2048,
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -47,6 +49,8 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("STATIC_CONTENT_PROJECTS", "/data/projects")
 	t.Setenv("ALLURE_BIN", "/opt/allure/bin/allure")
+	t.Setenv("MAX_CONCURRENT_BUILDS", "2")
+	t.Setenv("BUILD_HEAP_MB", "3072")
 
 	got := Load()
 
@@ -61,6 +65,8 @@ func TestLoadFromEnv(t *testing.T) {
 		DevMode:              true,
 		ProjectsDir:          "/data/projects",
 		AllureBin:            "/opt/allure/bin/allure",
+		MaxConcurrentBuilds:  2,
+		BuildHeapMB:          3072,
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -82,6 +88,16 @@ func TestLoadFallsBackOnGarbage(t *testing.T) {
 	}
 	if got.CheckResultsInterval != 0 {
 		t.Errorf("CheckResultsInterval = %v, want the 0 default", got.CheckResultsInterval)
+	}
+}
+
+// Zero is a valid int for getEnvAsInt, but zero slots would refuse every
+// build as busy - Load lifts it to one, so the startup log shows what runs.
+func TestLoadRaisesZeroBuildsToOne(t *testing.T) {
+	t.Setenv("MAX_CONCURRENT_BUILDS", "0")
+
+	if got := Load().MaxConcurrentBuilds; got != 1 {
+		t.Errorf("MaxConcurrentBuilds = %d, want 1", got)
 	}
 }
 

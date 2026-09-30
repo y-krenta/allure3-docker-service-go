@@ -101,7 +101,7 @@ func sweep(ctx context.Context, projectsDir string, seen map[string]fingerprint,
 			seen[id] = fp
 			slog.Info("watcher: generation started", "project_id", id)
 
-		case errors.Is(err, report.ErrAlreadyRunning):
+		case errors.Is(err, report.ErrBusy), errors.Is(err, report.ErrAlreadyRunning):
 			continue
 
 		case errors.Is(err, report.ErrNoResults):

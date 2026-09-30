@@ -91,7 +91,7 @@ func TestSeededHistoryMakesAFailureRegressed(t *testing.T) {
 			t.Fatalf("CreateDir(%q) = %v", id, err)
 		}
 	}
-	g := New(dir, allure, testHistoryLimit, testBaseURL)
+	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	writeResultWithStatus(t, dir, baseline, "steady", "passed", 1)
 	writeResultWithStatus(t, dir, baseline, "breaks", "passed", 2)
@@ -150,7 +150,7 @@ func TestReseedingKeepsASecondFailureRegressed(t *testing.T) {
 			t.Fatalf("CreateDir(%q) = %v", id, err)
 		}
 	}
-	g := New(dir, allure, testHistoryLimit, testBaseURL)
+	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	writeResultWithStatus(t, dir, baseline, "breaks", "passed", 1)
 	if err := g.Generate(t.Context(), baseline); err != nil {

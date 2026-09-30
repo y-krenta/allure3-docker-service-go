@@ -76,7 +76,7 @@ func generateTwice(t *testing.T) (dir, projectID string) {
 		writeRealResult(t, dir, projectID, n)
 	}
 
-	g := New(dir, allure, testHistoryLimit, testBaseURL)
+	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 	for build := 1; build <= 2; build++ {
 		if err := g.Generate(t.Context(), projectID); err != nil {
 			t.Fatalf("Generate (build %d) = %v, want nil", build, err)

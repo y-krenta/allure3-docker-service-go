@@ -6,6 +6,23 @@ services:
     # the service's own shutdownTimeout (25s) fits inside it: uploads and
     # exports in flight get to finish instead of being cut off mid-response.
     stop_grace_period: 30s
+    # The service limits the work it controls: at most MAX_CONCURRENT_BUILDS
+    # builds (4) at once, each with a BUILD_HEAP_MB V8 old-space cap (2048 MiB).
+    # Old space is not the whole process - a build takes ~300 MiB more.
+    # CPU is not capped by the service: a 10k-test build averages 2.3 cores.
+    #
+    # Container limits provide the hard resource ceiling. Size them for the host
+    # and the deployment: they catch what the service cannot, such as a memory
+    # leak or growth outside the V8 heap.
+    #
+    # A low cpus only slows builds down. memswap_limit equal to mem_limit disables
+    # swap: an overrun ends in an OOM kill instead of swap thrashing.
+    #
+    # See "Resource limits" in the README for the measurements and rationale.
+    mem_limit: 16g
+    memswap_limit: 16g
+    # cpus: 4
+    pids_limit: 512
     environment:
       # The address CI and browsers reach this service at, scheme included.
       # Every report url is built from it and the service refuses to start
@@ -16,6 +33,12 @@ services:
       KEEP_HISTORY_LATEST: 60
       # 0 - the watcher is off, reports are built on request only.
       CHECK_RESULTS_EVERY_SECONDS: 0
+      # Builds running at once across all projects; one more is refused with
+      # 503 and Retry-After instead of being queued.
+      MAX_CONCURRENT_BUILDS: 4
+      # V8 old-space cap per build in MiB (--max-old-space-size), enough for ~10k
+      # tests with 60 runs of history.
+      BUILD_HEAP_MB: 2048
     ports:
       # The port is open to the network: CI runners on other machines have to
       # reach the service. It authenticates nobody, so deploy it only on a

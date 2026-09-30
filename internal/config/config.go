@@ -22,6 +22,8 @@ type Config struct {
 	ProjectsDir          string        // Default path projects
 	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
 	PublicBaseURL        string        // Public address of this service; required, validated in main
+	MaxConcurrentBuilds  int           // Builds running at once across all projects; below 1 means 1
+	BuildHeapMB          int           // V8 old-space cap of one build in MiB; 0 leaves it to Node
 }
 
 // Load reads configuration from environment variables, applying defaults
@@ -41,6 +43,8 @@ func Load() Config {
 	config.ProjectsDir = cmp.Or(os.Getenv("STATIC_CONTENT_PROJECTS"), "/app/projects")
 	config.AllureBin = cmp.Or(os.Getenv("ALLURE_BIN"), "allure")
 	config.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
+	config.MaxConcurrentBuilds = max(getEnvAsInt("MAX_CONCURRENT_BUILDS", 4), 1)
+	config.BuildHeapMB = getEnvAsInt("BUILD_HEAP_MB", 2048)
 
 	return config
 

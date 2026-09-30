@@ -17,6 +17,8 @@ Table of contents
    * [Running from source](#running-from-source)
 * [Generating Allure results](#generating-allure-results)
 * [Configuration](#configuration)
+   * [The watcher](#the-watcher)
+   * [Resource limits](#resource-limits)
 * [Storage layout](#storage-layout)
 * [HTTP API](#http-api)
    * [Info endpoints](#info-endpoints)
@@ -25,6 +27,8 @@ Table of contents
    * [Report generation](#report-generation)
    * [Report endpoints](#report-endpoints)
 * [Typical CI workflow](#typical-ci-workflow)
+   * [Several pipelines, one project](#several-pipelines-one-project)
+   * [Answers the report step can get](#answers-the-report-step-can-get)
 * [Opening the report](#opening-the-report)
 * [Deploying](#deploying)
    * [File permissions](#file-permissions)
@@ -135,7 +139,7 @@ STATIC_CONTENT_PROJECTS="$PWD/.local/projects" go run ./cmd/allure-service
 The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or `allure --version` fails, the service exits immediately rather than discovering it on the first build:
 
 ```
-2026/08/13 00:34:39 history limit 60
+2026/08/13 00:34:39 history limit 60, max concurrent builds 4, build heap 2048 MB
 2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.19.0)
 2026/08/13 00:34:39 Starting server on port 5050
 ```
@@ -185,8 +189,10 @@ All configuration is environment variables; invalid values fall back to the defa
 | `KEEP_HISTORY` | `true` | Accumulate run history between builds. `false` means **erase**: the history limit collapses to `0` and `history.jsonl` is truncated on every build |
 | `KEEP_HISTORY_LATEST` | `60` | How many past runs to keep — the same number of points in the trend chart, and the same number of archived reports |
 | `CHECK_RESULTS_EVERY_SECONDS` | `0` | Watcher interval. `0` disables it; reports are then built only via the API |
+| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. One more is refused with `503` and `Retry-After`, never queued. Values below `1` mean `1`. See [Resource limits](#resource-limits) |
+| `BUILD_HEAP_MB` | `2048` | V8 old-space cap of one build, in MiB (`--max-old-space-size`) — enough for ~10 000 tests with 60 runs of history. `0` leaves it to Node. See [Resource limits](#resource-limits) |
 
-The effective history limit is printed at startup as `history limit N`.
+The effective limits are printed at startup as `history limit N, max concurrent builds K, build heap H MB`.
 
 `SECURITY_ENABLED=1` and `TLS=1` **refuse to start** (`SECURITY_ENABLED is not supported`, `TLS is not supported`) — better a loud failure than a service that silently ignores the flag and either serves everything unauthenticated or carries in cleartext what the operator believes is encrypted. `OPTIMIZE_STORAGE` and `DEV_MODE` are parsed but do nothing yet; setting either logs a warning at startup.
 
@@ -196,6 +202,49 @@ With `CHECK_RESULTS_EVERY_SECONDS=N` the service polls every project's `results/
 
 - **On** (e.g. `3`) suits a **local** machine, where you drop results into the mount and want a report without calling anything.
 - **Off** (`0`) suits a **server fed by CI**: nothing regenerates until the pipeline asks for it, and a report then corresponds to exactly one execution. This is the default and what [`docker-compose.yml`](docker-compose.yml) ships with.
+
+A watcher build refused for lack of a slot is retried on the next sweep.
+
+### Resource limits
+
+Every build is a separate `allure generate` process — Node — and its memory grows with the number of tests and, above all, with history. Uploads stream to disk and the Go service itself idles at ~50 MB, so the footprint is *builds running at once × memory of one build*. The service limits the two factors it controls — build concurrency and V8 old space — while the container provides the hard resource ceiling:
+
+- `MAX_CONCURRENT_BUILDS` (4) caps the number of builds. It is an operational trade-off, not a measured optimum: a 10 000-test build takes ~20 s, so four slots pass about 12 such builds a minute, and a build requested while all four are busy gets `503` with `Retry-After` rather than a place in a queue. Raising it to 6 is fine as throughput tuning, but it raises the memory and CPU demand along with it.
+- `BUILD_HEAP_MB` (2048) caps each build's V8 old space, in MiB — the service hands it to the CLI as `--max-old-space-size`, after any `NODE_OPTIONS` of your own, so it always wins. 10 000 tests pass with 1536 MiB, but the heap was searched in 512 MiB steps: all that is known is that 1024 is too little and 1536 is enough, so 2048 is the margin. Old space is not the whole process — the young generation, buffers and native memory come on top, ~300 MiB per build.
+
+Out of the box, four concurrent builds are estimated at 4 × (2048 + ~300 MiB) ≈ 9.2 GiB of build memory. Measured with those defaults and no CPU limit, four parallel 10 000-test builds peaked at 6.4 GiB in the build processes and at 7.8 GiB in the container's cgroup, page cache included; nothing was OOM-killed, and the run took 56 s at 7.5 cores on average. CPU is not capped by the service: a 10 000-test build averages 2.3 cores, and the 7.5 is load observed on a 12-core host, not a limit or a worst case.
+
+A build that outgrows its heap fails with `JavaScript heap out of memory`; `reports/latest` keeps the previous report. `BUILD_HEAP_MB=0` leaves the heap to Node, which then takes a quarter of the container's (or the host's) memory per build.
+
+Measured on synthetic results (3–5 steps per test, a text attachment on each, a screenshot on every tenth, 15% failed) with 60 runs of history, one build:
+
+| Tests | Memory | Time | CPU | Smallest heap that passes |
+|---|---|---|---|---|
+| 1 000 | 0.4 GB | 2 s | 1.2 cores | — |
+| 3 000 | 0.7 GB | 6 s | 1.7 cores | 512 MiB |
+| 6 000 | 1.2 GB | 11 s | 2 cores | 1024 MiB |
+| 10 000 | 1.7 GB | 20 s | 2.3 cores | 1536 MiB |
+| 20 000 | 3.3 GB | 57 s | 3.2 cores | 3072 MiB |
+| 50 000 | 7.4 GB | 7 min | 3.6 cores | 7168 MiB |
+
+Memory scales linearly with parallel builds, and it depends on the results, not on the hardware: a faster server builds sooner, not in less memory. Fewer history runs (`KEEP_HISTORY_LATEST`) cut it as well.
+
+**Container limits are the hard ceiling.** The service's caps cannot stop a leak or growth outside the V8 heap — Go memory, Node's native allocations, buffers — and the host's other tenants deserve a guarantee that does not depend on this service's code. The compose file ships:
+
+- `mem_limit: 16g` — the hard memory ceiling for the whole container. The default configuration runs with a 16 GiB memory limit and swap disabled: the last boundary for memory growth the service does not control. 16 GiB is chosen for hosts with 32 GiB, leaving the rest to the OS, Docker and other workloads; it is not derived from the estimate above, which it clears by ~7 GiB. Size it for your host: Docker does not check `mem_limit` against the host's RAM, so on a host with 16 GiB or less this limit restrains nothing. With your own settings, keep it no lower than `MAX_CONCURRENT_BUILDS × (BUILD_HEAP_MB + 300 MiB) + 0.5 GiB` — 9.7 GiB for the defaults.
+- `memswap_limit: 16g` — the limit on memory **plus** swap, not swap on top of memory: equal to `mem_limit`, it means 16 GiB of RAM and no swap, so an overrun ends in an OOM kill instead of swap thrashing that drags a build into its timeout. Only a `memswap_limit` above `mem_limit` allows swap — and leaving it unset allows as much swap as `mem_limit`, which is why it is set explicitly.
+- `pids_limit: 512` — a cap on processes and threads together, against a leak of child processes or a fork bomb. It depends relatively little on the host: four concurrent 10 000-test builds peaked at 63 tasks, a margin of 8×.
+- `# cpus: 4` — commented out, since the CPU budget is specific to each deployment. A lower `cpus` only makes builds slower: four 10 000-test builds under `cpus: 4`, `mem_limit: 8g` and `BUILD_HEAP_MB=1536` took 83 s instead of 56 s; four 6 000-test builds took 38 s. Keep an eye on the build timeout, though: generation is killed after 10 minutes, and 50 000 tests already take 7 with 3.6 cores. Docker rejects a value above the CPU resources available to the Docker Engine; on the 12-CPU host used for validation, the accepted range was 0.01–12.00.
+
+20 000 tests two at a time need `BUILD_HEAP_MB=3072` and `MAX_CONCURRENT_BUILDS=2`; that pair peaked at 6.3 GB under `mem_limit: 8g`.
+
+When a limit is hit, it shows up in three places:
+
+- **the build's status** — `state: "failed"` with `JavaScript heap out of memory` in `error` when `BUILD_HEAP_MB` was too small, or `signal: killed` when the container's memory limit was;
+- **Docker** — `docker events --filter event=oom` reports the container, and `docker inspect -f '{{.State.OOMKilled}}' <container>` turns `true`, even though only the build was killed and the service kept running;
+- **`503` answers** — builds are arriving faster than the slots free up.
+
+`docker stats` shows current usage against the limit. Hitting a limit once is the ceiling doing its job; hitting it regularly means the project outgrew the defaults — raise `BUILD_HEAP_MB` and the memory limit together.
 
 ## Storage layout
 
@@ -301,7 +350,7 @@ HTTP/1.1 200 OK
 {"processed_files":["9f0a-result.json","environment.properties"],"processed_files_count":2}
 ```
 
-Each filename is sanitised: the path is dropped (`a/b/x.json` → `x.json`) and only ASCII letters, digits, `.`, `_` and `-` survive. Empty files are skipped silently, and a file already stored under that name is left as it was. The total upload is capped at 1 GB. Uploads are not transactional — files written before an error stay on disk, and a retry overwrites them, since Allure names results after UUIDs.
+Each filename is checked: the path is dropped (`a/b/x.json` → `x.json`), and a name with anything but ASCII letters, digits, `.`, `_` and `-`, or longer than 255 bytes, fails the whole request with `400`. Every name Allure generates passes. Empty files are skipped silently, and a file already stored under that name is replaced. The total upload is capped at 1 GB. Uploads are not transactional — files written before an error stay on disk, and a retry overwrites them, since Allure names results after UUIDs.
 
 Wipe the results (top-level files only; the published report is untouched):
 
@@ -335,6 +384,8 @@ Two notable refusals, both `409`:
 
 - **a build of this project is already running.** The running build may have started *before* your results were uploaded, so it is not silently reused. Poll until the state leaves `running`, then `POST` again.
 - **the results directory is empty.** Allure would happily build an empty report and publishing it would erase the last good one.
+
+And one `503`: **`MAX_CONCURRENT_BUILDS` builds are already running**, across all projects. It carries `Retry-After: 30`; nothing is queued, so `POST` again after that. `history/clean` answers the same `503` when the history was cleared but the rebuild found no free slot — `POST /generation` then builds on the cleared history.
 
 The status registry lives **in memory only**: after a restart it is empty, so a project with a report on disk still answers `404` here.
 
@@ -383,16 +434,17 @@ Export streams the archive as it walks the report, holding the project's build l
 
 ## Typical CI workflow
 
-With the watcher off, one execution is one report:
+With the watcher off, one execution is one report. Run the tests however you like; the report is a separate step after them — clean, upload, build, wait — and that step, start to finish, is what the rest of this section is about:
 
 ```bash
 set -euo pipefail
 BASE=http://localhost:5050/projects/default
 
-# 1. drop the previous execution's results
-curl -sf -X DELETE "$BASE/results"
+# 1. run your tests, producing ./allure-results
 
-# 2. run your tests, producing ./allure-results
+# 2. drop the previous execution's results — right before the upload,
+#    inside the same locked step (see "Several pipelines, one project")
+curl -sf -X DELETE "$BASE/results"
 
 # 3. upload this execution's results
 shopt -s nullglob
@@ -401,9 +453,13 @@ for f in ./allure-results/*; do upload+=(-F "files[]=@$f"); done
 [ ${#upload[@]} -gt 0 ] || { echo "no results were produced"; exit 1; }
 curl -sf -X POST "$BASE/results" "${upload[@]}"
 
-# 4. build the report and wait for the outcome — 150 tries × 2s = 5 minutes
-curl -sf -X POST "$BASE/generation"
-for _ in $(seq 150); do
+# 4. start the build; --retry waits out a 503 (every build slot busy),
+#    honouring its Retry-After — up to 20 × 30 s
+curl -sf --retry 20 -X POST "$BASE/generation"
+
+# 5. wait for the outcome — 300 × 2 s = 10 minutes, the service's own
+#    build timeout, so the loop never gives up on a build still running
+for _ in $(seq 300); do
   state=$(curl -sf "$BASE/generation" | jq -r .state)
   [ "$state" = running ] || break
   sleep 2
@@ -411,15 +467,79 @@ done
 [ "$state" = succeeded ] || { curl -sf "$BASE/generation" | jq; exit 1; }
 ```
 
-Cleaning first is what makes a report represent exactly one execution. If the project may not exist yet, `POST /projects` first and ignore the `409`.
+Cleaning is what makes a report represent exactly one execution. If the project may not exist yet, `POST /projects` first and ignore the `409`.
 
-Three details make the difference between a pipeline that reports the truth and one that looks green regardless:
+Four details make the difference between a pipeline that reports the truth and one that looks green regardless:
 
-- **The wait is bounded.** A build that hangs, or a service restarted mid-build, would otherwise keep an unbounded `until` loop spinning until the CI job's own timeout burns the runner's budget. Size the count for your slowest report.
+- **A busy service is waited out, not failed on.** The service runs at most `MAX_CONCURRENT_BUILDS` builds at once across all projects and refuses the next one with `503` instead of queueing it. `curl --retry` repeats the `POST` after the `Retry-After` delay; without it the step fails whenever other projects happen to be building.
+- **The wait is bounded.** A build that hangs, or a service restarted mid-build, would otherwise keep an unbounded loop spinning until the CI job's own timeout burns the runner's budget.
 - **The last line decides the job's exit code.** `POST /generation` answering `202` means the build was accepted, not that it succeeded, and `GET /generation` returns `200` even when it reports `state: "failed"` — the status read worked, only the build did not. Without that final check the step passes on a failed report. The body printed on failure carries the CLI's message in `error`.
 - **The upload builds an argument array.** Interpolating a glob into the command line splits on spaces, so it breaks as soon as the workspace path has one — `/var/lib/jenkins/workspace/My Job/allure-results` is an ordinary path. An empty `allure-results` is the other case: with `nullglob` unset it sends the literal `*` as a file name and gets a `400`, instead of saying plainly that the tests produced nothing.
 
 The sequence is the same under any CI system; what changes is only the wrapper around it. In GitHub Actions it is a `run:` step in a job whose `services:` block runs the image; in GitLab CI a `script:` with the image under `services:`; on Jenkins a `sh` step. Any runner with `bash`, `curl` and `jq` can execute the block as written.
+
+### Several pipelines, one project
+
+A project holds one set of results and builds one report at a time, and the service does not order the pipelines feeding it. Two pipelines reporting into the same project at once — a run on `master` and the one started by a merge into it, a nightly and a manual rerun — break each other:
+
+- the second `DELETE /results` wipes the first pipeline's upload, or both uploads land together and one report mixes two executions;
+- the second `POST /generation` gets `409` while the first build runs, and fails its pipeline.
+
+The fix belongs in CI: **serialize the report step per project**, from the `DELETE` to the last poll, with a lock keyed by the project id. The tests themselves still run in parallel; only the few seconds of reporting wait their turn, in the order the CI system grants the lock. Different projects need no lock between them — the service's build slots handle those.
+
+**GitLab CI** — a `resource_group` lets one job at a time through across all pipelines:
+
+```yaml
+allure-report:
+  stage: report
+  resource_group: allure-my-project
+  script:
+    - ./ci/allure-report.sh
+```
+
+Jobs waiting on a resource group are released in no particular order by default. For first come, first served, switch the group to `oldest_first` once through the API: `PUT /projects/:id/resource_groups/allure-my-project` with `process_mode=oldest_first`.
+
+**GitHub Actions** — a `concurrency` group, without cancelling the run in progress:
+
+```yaml
+jobs:
+  allure-report:
+    needs: tests
+    concurrency:
+      group: allure-my-project
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./ci/allure-report.sh
+```
+
+GitHub keeps one run pending per group: a third run arriving while one reports and one waits cancels the waiting one. That run's results never make it into a report; if every run must, use a lock the job takes itself.
+
+**Jenkins** — the [Lockable Resources](https://plugins.jenkins.io/lockable-resources/) plugin, which grants the lock in request order:
+
+```groovy
+stage('Allure report') {
+  steps {
+    lock(resource: 'allure-my-project') {
+      sh './ci/allure-report.sh'
+    }
+  }
+}
+```
+
+### Answers the report step can get
+
+| Answer | Meaning | What the pipeline should do |
+|---|---|---|
+| `503` on `POST /generation` | Every build slot is taken, by any projects | Retry after `Retry-After` — `curl --retry` does it |
+| `409` "already running" on `POST /generation` | This project is already building | Nothing to retry: the lock is missing, or a build was started outside CI (the watcher, a manual call) |
+| `409` "no results" on `POST /generation` | `results/` is empty | Fail: the upload sent nothing |
+| `404` on any project URL | The project does not exist | `POST /projects` first |
+| `503` on `POST /history/clean` | History cleared, rebuild not started | `POST /generation` with `--retry`; it builds on the cleared history |
+| `state: "failed"` | The build ran and failed; `error` has the CLI's message | Fail. `JavaScript heap out of memory` there means the project outgrew `BUILD_HEAP_MB` — see [Resource limits](#resource-limits) |
+| `404` on `GET /generation` mid-wait | The service restarted and forgot the build | Rerun the report step |
+
+Size the CI job's timeout for the worst case: waiting for the lock, plus up to 10 minutes of `503` retries, plus up to 10 minutes of build.
 
 ## Opening the report
 
@@ -490,7 +610,6 @@ The service is a single stateless process plus a data directory, so it deploys l
 
 ## Known issues
 
-- **Allure 3 history bootstrap** — some Allure 3 versions do not emit history on the very first run, which affects Status Dynamics / trends ([allure3#455](https://github.com/allure-framework/allure3/issues/455)). The image pins a known-good version via the `ALLURE_VERSION` build arg; change it deliberately.
 - **`Permission denied` on the mounted volume** — a UID mismatch, see [File permissions](#file-permissions).
 - **Generation status is lost on restart** — it is in-memory by design; the reports themselves are on disk and unaffected.
 
@@ -503,7 +622,7 @@ Parsed or planned, but with no behaviour behind them today:
 - **`OPTIMIZE_STORAGE`** — parsed, ignored; planned for a later release. Setting it logs a warning at startup.
 - **`DEV_MODE`** — parsed, ignored. Setting it logs a warning at startup.
 - **Swagger / OpenAPI document** — the endpoint table and examples above are the API reference for now.
-- **`URL_PREFIX`** — mount the service at the proxy root for now. Report links are relative, so a path-stripping proxy works.
+- **`URL_PREFIX`** — the service always serves at its own root. Behind a proxy that strips a prefix, put the prefix into `PUBLIC_BASE_URL` (`http://ci.internal/allure`): a report's own files are linked relatively, and the links to past runs are built from `PUBLIC_BASE_URL`.
 - **Emailable report**, **`armv7` images**.
 
 ## Differences from upstream
