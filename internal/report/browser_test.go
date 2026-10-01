@@ -9,27 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-// This file opens a finished report in a real browser, which is the only check
-// that catches "the page is dead" as a class rather than one known symptom.
-// The defect that took production down had nothing to do with anything the
-// other tests assert: every url was written where it belonged, the CLI built a
-// report, the service served it in under 80ms - and clicking a test threw in
-// the browser and unmounted the whole UI. The console said so; nothing else
-// did.
 //
-// Chrome is driven through --dump-dom rather than a browser-automation
-// library. It loads the page, lets its JavaScript run, and prints the DOM it
-// ended up with, which is enough to tell a rendered report from an unmounted
-// one - and it costs no dependency, no npm install and no downloaded browser.
-// --enable-logging=stderr adds the console output on top, so the page's own
-// errors come back as text.
 
-// chromeCandidates are the paths a headless Chrome is looked for under, bare
-// names included: exec.LookPath searches PATH for those.
 var chromeCandidates = []string{
 	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 	"/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -39,9 +25,6 @@ var chromeCandidates = []string{
 	"chromium-browser",
 }
 
-// requireChrome returns a path to Chrome or skips the test. A machine without
-// a browser cannot answer the question this file asks, and failing there would
-// only teach people to ignore the failure.
 func requireChrome(t *testing.T) string {
 	t.Helper()
 
@@ -54,10 +37,6 @@ func requireChrome(t *testing.T) string {
 	return ""
 }
 
-// anOpenedTest returns the id of one test in the report and the name that test
-// carries. The id is the name of its file under data/test-results, and it is
-// also what goes in the page's fragment: opening a test is a client-side
-// route, so "#<id>" is the browser equivalent of clicking it in the tree.
 func anOpenedTest(t *testing.T, reportDir string) (id, name string) {
 	t.Helper()
 
@@ -90,16 +69,8 @@ func anOpenedTest(t *testing.T, reportDir string) (id, name string) {
 	return "", ""
 }
 
-// TestReportOpensATestInABrowser is the end of the chain the other tests only
-// cover in pieces: a report built by the real CLI, served over HTTP, opened at
-// a test the way a click opens it, in a browser that runs its JavaScript.
 //
-// It asserts two things, and both are needed. The step of the opened test has
-// to appear in the DOM, which says the test's own page rendered rather than
-// unmounted; and the console has to be silent, which is what actually spoke up
-// when the page died. A page can also fail by rendering an error boundary with
-// no console output at all, which is why the DOM is checked and not only the
-// log.
+
 func TestReportOpensATestInABrowser(t *testing.T) {
 	chrome := requireChrome(t)
 
@@ -108,8 +79,6 @@ func TestReportOpensATestInABrowser(t *testing.T) {
 
 	id, name := anOpenedTest(t, reportDir)
 
-	// The report has to be served over HTTP: it fetches its own data, and a
-	// browser refuses those requests from a file:// page.
 	srv := httptest.NewServer(http.FileServer(http.Dir(reportDir)))
 	defer srv.Close()
 
@@ -119,15 +88,11 @@ func TestReportOpensATestInABrowser(t *testing.T) {
 	cmd := exec.CommandContext(ctx, chrome,
 		"--headless",
 		"--disable-gpu",
-		// Required wherever the test runs as root, which is the normal
-		// case in a container; harmless elsewhere.
+
 		"--no-sandbox",
-		// A fresh profile per run: Chrome refuses to share one, and a
-		// stale profile is a source of failures that have nothing to do
-		// with the report.
+
 		"--user-data-dir="+t.TempDir(),
-		// Fast-forwards timers instead of waiting on them, so the page
-		// gets its full startup without the test sleeping through it.
+
 		"--virtual-time-budget=15000",
 		"--enable-logging=stderr",
 		"--log-level=0",
@@ -135,14 +100,29 @@ func TestReportOpensATestInABrowser(t *testing.T) {
 		srv.URL+"/#"+id,
 	)
 
+	stdout := newDOMWriter()
 	var stderr strings.Builder
+	cmd.Stdout = stdout
 	cmd.Stderr = &stderr
-	dom, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("chrome failed to open the report: %v\n%s", err, stderr.String())
+
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("starting chrome: %v", err)
 	}
 
-	if !strings.Contains(string(dom), testStepName) {
+	select {
+	case <-stdout.done:
+	case <-ctx.Done():
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+
+	dom := stdout.String()
+	if !strings.Contains(dom, "</html>") {
+		t.Fatalf("chrome printed no complete DOM within the timeout\n%s", stderr.String())
+	}
+
+	if !strings.Contains(dom, testStepName) {
 		t.Errorf("the page opened at test %q does not show that test's step; the report either unmounted or never rendered the test\nconsole:\n%s",
 			name, consoleLines(stderr.String()))
 	}
@@ -152,8 +132,36 @@ func TestReportOpensATestInABrowser(t *testing.T) {
 	}
 }
 
-// consoleLines returns the page's console output, dropping Chrome's own
-// chatter about GPUs and sandboxes.
+type domWriter struct {
+	mu   sync.Mutex
+	buf  strings.Builder
+	done chan struct{}
+	once sync.Once
+}
+
+func newDOMWriter() *domWriter {
+	return &domWriter{done: make(chan struct{})}
+}
+
+func (w *domWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.buf.Write(p)
+
+	if strings.Contains(w.buf.String(), "</html>") {
+		w.once.Do(func() { close(w.done) })
+	}
+	return len(p), nil
+}
+
+func (w *domWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.buf.String()
+}
+
 func consoleLines(stderr string) string {
 	var kept []string
 	for _, line := range strings.Split(stderr, "\n") {
@@ -167,11 +175,6 @@ func consoleLines(stderr string) string {
 	return strings.Join(kept, "\n")
 }
 
-// consoleErrors returns the console lines that report a throw. Warnings and
-// logs are left alone deliberately: a report is free to be noisy, and a test
-// that fails on any output at all would be turned off the first time Allure
-// added a deprecation notice. An uncaught exception is different - that is the
-// shape the defect took, and there is no healthy reason for one.
 func consoleErrors(stderr string) []string {
 	var errs []string
 	for _, line := range strings.Split(stderr, "\n") {
