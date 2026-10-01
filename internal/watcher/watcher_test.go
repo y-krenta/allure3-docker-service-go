@@ -17,8 +17,6 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
-// writeResult puts a file into a project's results directory, creating the
-// directory tree on first use. It is the fixture for "CI uploaded something".
 func writeResult(t *testing.T, root, id, name, content string) {
 	t.Helper()
 
@@ -31,9 +29,6 @@ func writeResult(t *testing.T, root, id, name, content string) {
 	}
 }
 
-// writeReport publishes a stand-in report for id, dated at: both the
-// reports/latest directory and its index.html carry that mtime, so the test
-// holds whichever of the two the watcher reads.
 func writeReport(t *testing.T, root, id string, at time.Time) {
 	t.Helper()
 
@@ -52,7 +47,6 @@ func writeReport(t *testing.T, root, id string, at time.Time) {
 	}
 }
 
-// dateResults sets the mtime of every file in id's results directory to at.
 func dateResults(t *testing.T, root, id string, at time.Time) {
 	t.Helper()
 
@@ -68,13 +62,8 @@ func dateResults(t *testing.T, root, id string, at time.Time) {
 	}
 }
 
-// upToDate is a report date later than any result a test writes, for tests
-// that need the warm-up pass to find nothing to build and only remember.
 var upToDate = time.Now().Add(time.Hour)
 
-// recorder is a StartFunc that remembers which projects it was asked to build
-// and answers with a canned error. It is mutex-guarded because Run calls it
-// from its own goroutine.
 type recorder struct {
 	mu  sync.Mutex
 	ids []string
@@ -102,8 +91,6 @@ func TestScanEmptyDirIsZeroFingerprint(t *testing.T) {
 		t.Fatalf("scan: %v", err)
 	}
 
-	// The zero fingerprint is what a missing map entry yields, so an empty
-	// results directory must be indistinguishable from a never-seen project.
 	if fp != (fingerprint{}) {
 		t.Errorf("scan of empty dir = %+v, want zero value", fp)
 	}
@@ -146,8 +133,6 @@ func TestScanTracksNewestModTime(t *testing.T) {
 		}
 	}
 
-	// Explicit times rather than sleeping: the file written second is not
-	// guaranteed to carry the later mtime on a coarse-grained filesystem.
 	base := time.Now().Add(-time.Hour)
 	if err := os.Chtimes(old, base, base); err != nil {
 		t.Fatal(err)
@@ -156,8 +141,6 @@ func TestScanTracksNewestModTime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read the stored mtime back instead of asserting on what we wrote: the
-	// filesystem may round it, and the test should not care.
 	info, err := os.Stat(recent)
 	if err != nil {
 		t.Fatal(err)
@@ -215,8 +198,6 @@ func TestScanMissingDirReturnsError(t *testing.T) {
 	}
 }
 
-// A restart must not rebuild every project: results already published in a
-// report newer than all of them are only remembered.
 func TestSweepWarmUpSkipsAnUpToDateReport(t *testing.T) {
 	root := t.TempDir()
 	base := time.Now().Add(-2 * time.Hour)
@@ -237,10 +218,6 @@ func TestSweepWarmUpSkipsAnUpToDateReport(t *testing.T) {
 	}
 }
 
-// Results uploaded after the last report - while the service was down, or in
-// the first interval after it came up - are a change the warm-up pass is the
-// only one to see. Remembering them as the baseline would leave them unbuilt
-// until the next upload.
 func TestSweepWarmUpBuildsResultsNewerThanTheReport(t *testing.T) {
 	root := t.TempDir()
 	base := time.Now().Add(-2 * time.Hour)
@@ -257,12 +234,44 @@ func TestSweepWarmUpBuildsResultsNewerThanTheReport(t *testing.T) {
 		t.Fatalf("warm-up pass started builds for %v, want [proj]", got)
 	}
 
-	// The build it started covers these results; the next tick must not
-	// start another for the same files.
 	sweep(context.Background(), root, seen, rec.start, false)
 
 	if got := rec.calls(); len(got) != 1 {
 		t.Errorf("calls after an unchanged tick = %v, want the build not to be repeated", got)
+	}
+}
+
+func TestSweepWarmUpSkipsAReportDatedLikeItsResults(t *testing.T) {
+	root := t.TempDir()
+	at := time.Now().Add(-time.Hour)
+	writeResult(t, root, "proj", "a-result.json", "{}")
+	dateResults(t, root, "proj", at)
+	writeReport(t, root, "proj", at)
+
+	rec := &recorder{}
+	sweep(context.Background(), root, map[string]fingerprint{}, rec.start, true)
+
+	if got := rec.calls(); len(got) != 0 {
+		t.Errorf("warm-up pass started builds for %v, want none", got)
+	}
+}
+
+func TestSweepWarmUpBuildsWhenTheReportCannotBeChecked(t *testing.T) {
+	root := t.TempDir()
+	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
+
+	reports := projects.ReportsDir(root, "proj")
+	if err := os.Chmod(reports, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(reports, 0o755) })
+
+	rec := &recorder{}
+	sweep(context.Background(), root, map[string]fingerprint{}, rec.start, true)
+
+	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
+		t.Errorf("warm-up pass started builds for %v, want [proj]", got)
 	}
 }
 
@@ -288,16 +297,14 @@ func TestSweepStartsOnChange(t *testing.T) {
 	rec := &recorder{}
 	seen := map[string]fingerprint{}
 
-	sweep(context.Background(), root, seen, rec.start, true) // warm-up
-	writeResult(t, root, "proj", "b-result.json", "{}")      // CI uploads more
+	sweep(context.Background(), root, seen, rec.start, true)
+	writeResult(t, root, "proj", "b-result.json", "{}")
 	sweep(context.Background(), root, seen, rec.start, false)
 
 	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
 		t.Fatalf("calls = %v, want [proj]", got)
 	}
 
-	// A third sweep with nothing new must stay quiet: the accepted build has
-	// to have updated the stored fingerprint.
 	sweep(context.Background(), root, seen, rec.start, false)
 
 	if got := rec.calls(); len(got) != 1 {
@@ -315,21 +322,14 @@ func TestSweepKeepsFingerprintWhenAlreadyRunning(t *testing.T) {
 
 	sweep(context.Background(), root, seen, rec.start, true)
 	writeResult(t, root, "proj", "b-result.json", "{}")
-	sweep(context.Background(), root, seen, rec.start, false) // refused
-	sweep(context.Background(), root, seen, rec.start, false) // must retry
+	sweep(context.Background(), root, seen, rec.start, false)
+	sweep(context.Background(), root, seen, rec.start, false)
 
-	// This is the whole point of the retry rule: a refused build must not
-	// consume the change, or the results that arrived during the previous
-	// build would never be published.
 	if got := rec.calls(); len(got) != 2 {
 		t.Errorf("calls = %v, want the refused change to be retried on the next tick", got)
 	}
 }
 
-// A build already in flight is the normal case when CI POSTs /generation and
-// the watcher notices the same upload: nothing is wrong, and the change is
-// retried next tick. Logging it as an error would page someone every few
-// seconds for as long as the build runs.
 func TestSweepDoesNotLogAlreadyRunningAsAnError(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()
@@ -384,10 +384,6 @@ func TestSweepConsumesAChangeWithNothingLeftToBuild(t *testing.T) {
 	sweep(context.Background(), root, seen, rec.start, false)
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	// An emptied results directory - DELETE /projects/{id}/results - has
-	// nothing to build from and will not until something is uploaded, which
-	// changes the fingerprint again. Retrying it every tick only fills the log
-	// with a refusal nothing can act on.
 	if got := rec.calls(); len(got) != 1 {
 		t.Errorf("calls = %v, want an empty results directory not to be retried", got)
 	}
@@ -395,8 +391,7 @@ func TestSweepConsumesAChangeWithNothingLeftToBuild(t *testing.T) {
 
 func TestSweepIgnoresDirectoriesThatAreNotProjects(t *testing.T) {
 	root := t.TempDir()
-	// Uppercase: something created by hand under the projects root, which the
-	// service itself could never have made. Every start would fail validation.
+
 	writeResult(t, root, "NotAProject", "a-result.json", "{}")
 
 	rec := &recorder{}
@@ -413,16 +408,14 @@ func TestSweepIgnoresDirectoriesThatAreNotProjects(t *testing.T) {
 func TestSweepIgnoresProjectsWithNothingToBuild(t *testing.T) {
 	root := t.TempDir()
 
-	// An empty results directory: its fingerprint is the zero value, which is
-	// exactly what an absent map entry reads as, so it must never look changed.
 	if err := os.MkdirAll(projects.ResultsDir(root, "empty"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A project directory with no results directory at all.
+
 	if err := os.MkdirAll(filepath.Join(root, "bare"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A stray file in the projects root, which is not a project.
+
 	if err := os.WriteFile(filepath.Join(root, "README"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -505,8 +498,6 @@ func TestRunStartsBuildAfterWarmUp(t *testing.T) {
 		Run(ctx, root, 10*time.Millisecond, start)
 	}()
 
-	// The first tick only records; the change has to be made after it, so
-	// wait for the warm-up to have happened before touching the directory.
 	time.Sleep(50 * time.Millisecond)
 	writeResult(t, root, "proj", "b-result.json", "{}")
 
@@ -521,9 +512,6 @@ func TestRunStartsBuildAfterWarmUp(t *testing.T) {
 
 	cancel()
 
-	// Bounded rather than a bare receive: a Run that ignores cancellation
-	// should fail this test, not hang the whole package until the go test
-	// timeout fires.
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
