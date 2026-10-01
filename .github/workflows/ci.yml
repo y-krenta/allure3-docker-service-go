@@ -14,9 +14,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
+        include:
+          - os: ubuntu-latest
+            browsers: chrome firefox
+          - os: macos-latest
+            browsers: chrome safari
 
     runs-on: ${{ matrix.os }}
 
@@ -51,12 +53,14 @@ jobs:
           for bin in node allure; do
             command -v "$bin" || { echo "missing: $bin"; exit 1; }
           done
-          case "$RUNNER_OS" in
-            Linux)   command -v google-chrome-stable ;;
-            macOS)   test -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ;;
-          esac || { echo "missing: Chrome"; exit 1; }
+
+      - name: Enable Safari automation
+        if: runner.os == 'macOS'
+        run: sudo safaridriver --enable
 
       - run: go test -race ./...
+        env:
+          E2E_BROWSERS: ${{ matrix.browsers }}
 
   image:
     needs: test
