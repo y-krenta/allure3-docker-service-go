@@ -1277,8 +1277,16 @@ func TestGenerateWaitsForASlotUntilItsContextEnds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 
-	if err := g.Generate(ctx, "demo"); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Generate with no free slot = %v, want context.DeadlineExceeded", err)
+	done := make(chan error, 1)
+	go func() { done <- g.Generate(ctx, "demo") }()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Generate with no free slot = %v, want context.DeadlineExceeded", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Generate kept waiting for a slot after its context ended")
 	}
 	if _, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("a build that never got a slot published a report (stat err = %v)", err)
