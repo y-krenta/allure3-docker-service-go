@@ -86,17 +86,27 @@ jobs:
             -e MAX_CONCURRENT_BUILDS=1 \
             -e CHECK_RESULTS_EVERY_SECONDS=0 \
             ci:${{ github.sha }}
-          for _ in $(seq 30); do
-            curl -fsS http://localhost:5050/health && exit 0
-            sleep 1
+          docker run -d --name e2e-watcher -p 5051:5050 \
+            -e PUBLIC_BASE_URL=http://localhost:5051 \
+            -e MAX_CONCURRENT_BUILDS=1 \
+            -e CHECK_RESULTS_EVERY_SECONDS=1 \
+            ci:${{ github.sha }}
+          for port in 5050 5051; do
+            for _ in $(seq 30); do
+              curl -fsS "http://localhost:$port/health" && continue 2
+              sleep 1
+            done
+            exit 1
           done
-          exit 1
 
       - name: End-to-end tests against the image
         env:
           E2E_BASE_URL: http://localhost:5050
+          E2E_WATCHER_URL: http://localhost:5051
         run: go test -count=1 -v ./e2e/
 
-      - name: Container log
+      - name: Container logs
         if: always()
-        run: docker logs e2e
+        run: |
+          docker logs e2e
+          docker logs e2e-watcher

@@ -22,7 +22,8 @@ import (
 )
 
 var (
-	baseURL string
+	baseURL    string
+	watcherURL string
 
 	skipReason string
 )
@@ -34,6 +35,7 @@ func TestMain(m *testing.M) {
 func run(m *testing.M) int {
 	if u := os.Getenv("E2E_BASE_URL"); u != "" {
 		baseURL = strings.TrimRight(u, "/")
+		watcherURL = strings.TrimRight(os.Getenv("E2E_WATCHER_URL"), "/")
 		return m.Run()
 	}
 
@@ -49,11 +51,19 @@ func run(m *testing.M) int {
 	}
 	defer svc.stop()
 
+	watcher, err := startService("CHECK_RESULTS_EVERY_SECONDS=1")
+	if err != nil {
+		log.Printf("e2e: starting the service with the watcher on: %v", err)
+		return 1
+	}
+	defer watcher.stop()
+
 	baseURL = svc.url
+	watcherURL = watcher.url
 	code := m.Run()
 	if code != 0 {
-
 		log.Printf("--- service log ---\n%s", svc.log())
+		log.Printf("--- watcher service log ---\n%s", watcher.log())
 	}
 	return code
 }
@@ -67,7 +77,7 @@ type service struct {
 	exited <-chan error
 }
 
-func startService() (_ *service, err error) {
+func startService(env ...string) (_ *service, err error) {
 	dir, err := os.MkdirTemp("", "allure-e2e-*")
 	if err != nil {
 		return nil, err
@@ -107,6 +117,7 @@ func startService() (_ *service, err error) {
 		"MAX_CONCURRENT_BUILDS=1",
 		"CHECK_RESULTS_EVERY_SECONDS=0",
 	)
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
@@ -168,7 +179,8 @@ func freePort() (int, error) {
 }
 
 type client struct {
-	t *testing.T
+	t    *testing.T
+	base string
 }
 
 func newClient(t *testing.T) *client {
@@ -176,7 +188,7 @@ func newClient(t *testing.T) *client {
 	if skipReason != "" {
 		t.Skip(skipReason)
 	}
-	return &client{t: t}
+	return &client{t: t, base: baseURL}
 }
 
 func projectID(t *testing.T) string {
@@ -205,7 +217,7 @@ func (c *client) do(req *http.Request, want int) (*http.Response, []byte) {
 
 func (c *client) request(method, path string, body io.Reader) *http.Request {
 	c.t.Helper()
-	req, err := http.NewRequestWithContext(c.t.Context(), method, baseURL+path, body)
+	req, err := http.NewRequestWithContext(c.t.Context(), method, c.base+path, body)
 	if err != nil {
 		c.t.Fatalf("building %s %s: %v", method, path, err)
 	}
