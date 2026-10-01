@@ -12,7 +12,7 @@ func TestHistoryAccumulatesAcrossRuns(t *testing.T) {
 
 	c.createProject(id)
 	for _, run := range [][]result{
-		{passed(1), failed(2)},
+		{passed(1), failed(2), passed(3)},
 		{passed(1), passed(2)},
 	} {
 		c.clearResults(id)
@@ -60,8 +60,8 @@ func TestHistoryAccumulatesAcrossRuns(t *testing.T) {
 
 	var first summary
 	c.getJSON(reportsPath+"1/summary.json", &first)
-	if first.Stats.Total != 2 || first.Stats.Passed != 1 || first.Stats.Failed != 1 {
-		t.Errorf("build 1 counts %+v, want the first run: 1 passed, 1 failed", first.Stats)
+	if first.Stats.Total != 3 || first.Stats.Passed != 2 || first.Stats.Failed != 1 {
+		t.Errorf("build 1 counts %+v, want the first run: 2 passed, 1 failed", first.Stats)
 	}
 }
 
@@ -76,20 +76,30 @@ type testResult struct {
 func (c *client) testResult(reportPath, name string) testResult {
 	c.t.Helper()
 
+	var r testResult
+	c.getJSON(reportPath+"data/test-results/"+c.leaf(reportPath, name).NodeID+".json", &r)
+	return r
+}
+
+type treeLeaf struct {
+	NodeID     string `json:"nodeId"`
+	Name       string `json:"name"`
+	Transition string `json:"transition"`
+}
+
+func (c *client) leaf(reportPath, name string) treeLeaf {
+	c.t.Helper()
+
 	var tree struct {
-		LeavesByID map[string]struct {
-			Name string `json:"name"`
-		} `json:"leavesById"`
+		LeavesByID map[string]treeLeaf `json:"leavesById"`
 	}
 	c.getJSON(reportPath+"widgets/tree.json", &tree)
 
-	for id, leaf := range tree.LeavesByID {
+	for _, leaf := range tree.LeavesByID {
 		if leaf.Name == name {
-			var r testResult
-			c.getJSON(reportPath+"data/test-results/"+id+".json", &r)
-			return r
+			return leaf
 		}
 	}
 	c.t.Fatalf("no test called %q in the report at %s", name, reportPath)
-	return testResult{}
+	return treeLeaf{}
 }

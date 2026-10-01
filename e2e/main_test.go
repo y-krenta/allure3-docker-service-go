@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -317,9 +318,11 @@ const testStepName = "the step only an opened test shows"
 func passed(n int) result { return newResult(n, "passed") }
 func failed(n int) result { return newResult(n, "failed") }
 
+var resultSeq atomic.Int64
+
 func newResult(n int, status string) result {
 	return result{
-		uuid:   fmt.Sprintf("00000000-0000-4000-8000-%012d", n),
+		uuid:   fmt.Sprintf("00000000-0000-4000-8000-%012d", resultSeq.Add(1)),
 		name:   fmt.Sprintf("Test %d", n),
 		status: status,
 	}
