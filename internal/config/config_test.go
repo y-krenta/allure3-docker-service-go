@@ -91,13 +91,28 @@ func TestLoadFallsBackOnGarbage(t *testing.T) {
 	}
 }
 
-// Zero is a valid int for getEnvAsInt, but zero slots would refuse every
-// build as busy - Load lifts it to one, so the startup log shows what runs.
-func TestLoadRaisesZeroBuildsToOne(t *testing.T) {
-	t.Setenv("MAX_CONCURRENT_BUILDS", "0")
+// Zero is a valid int for getEnvAsInt, but zero slots would leave every build
+// waiting forever - Load lifts it to one, so the startup log shows what runs.
+// A negative value is a typo like any other and falls back to the default
+// with a warning, the same as every other int this package reads; it does
+// not mean "as few as possible".
+func TestLoadMaxConcurrentBuilds(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+	}{
+		{value: "0", want: 1},
+		{value: "-1", want: 4},
+	}
 
-	if got := Load().MaxConcurrentBuilds; got != 1 {
-		t.Errorf("MaxConcurrentBuilds = %d, want 1", got)
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("MAX_CONCURRENT_BUILDS", tt.value)
+
+			if got := Load().MaxConcurrentBuilds; got != tt.want {
+				t.Errorf("MAX_CONCURRENT_BUILDS=%s: MaxConcurrentBuilds = %d, want %d", tt.value, got, tt.want)
+			}
+		})
 	}
 }
 

@@ -22,7 +22,7 @@ type Config struct {
 	ProjectsDir          string        // Default path projects
 	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
 	PublicBaseURL        string        // Public address of this service; required, validated in main
-	MaxConcurrentBuilds  int           // Builds running at once across all projects; below 1 means 1
+	MaxConcurrentBuilds  int           // Builds running at once across all projects; 0 means 1, negative falls back to the default
 	BuildHeapMB          int           // V8 old-space cap of one build in MiB; 0 leaves it to Node
 }
 

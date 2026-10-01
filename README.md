@@ -189,7 +189,7 @@ All configuration is environment variables; invalid values fall back to the defa
 | `KEEP_HISTORY` | `true` | Accumulate run history between builds. `false` means **erase**: the history limit collapses to `0` and `history.jsonl` is truncated on every build |
 | `KEEP_HISTORY_LATEST` | `60` | How many past runs to keep — the same number of points in the trend chart, and the same number of archived reports |
 | `CHECK_RESULTS_EVERY_SECONDS` | `0` | Watcher interval. `0` disables it; reports are then built only via the API |
-| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. More are accepted and wait for a free slot, reading `running` meanwhile. Values below `1` mean `1`. See [Resource limits](#resource-limits) |
+| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. More are accepted and wait for a free slot, reading `running` meanwhile. `0` means `1`; a negative value is rejected with a warning in the log and the default is used. See [Resource limits](#resource-limits) |
 | `BUILD_HEAP_MB` | `2048` | V8 old-space cap of one build, in MiB (`--max-old-space-size`) — enough for ~10 000 tests with 60 runs of history. `0` leaves it to Node. See [Resource limits](#resource-limits) |
 
 The effective limits are printed at startup as `history limit N, max concurrent builds K, build heap H MB`.
