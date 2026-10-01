@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -103,7 +104,8 @@ func main() {
 	if !cfg.KeepHistory {
 		historyLimit = 0
 	}
-	log.Printf("history limit %d, max concurrent builds %d, build heap %d MB", historyLimit, cfg.MaxConcurrentBuilds, cfg.BuildHeapMB)
+	log.Printf("history limit %d, max concurrent builds %d, build heap %s",
+		historyLimit, cfg.MaxConcurrentBuilds, describeHeap(cfg.BuildHeapMB))
 	reports := report.New(cfg.ProjectsDir, cfg.AllureBin, historyLimit, baseURL, cfg.MaxConcurrentBuilds, cfg.BuildHeapMB)
 
 	versionCtx, cancelVersion := context.WithTimeout(context.Background(), 5*time.Second)
@@ -158,4 +160,14 @@ func main() {
 		log.Println(errShutdown)
 	}
 	log.Println("Server gracefully stopped")
+}
+
+// describeHeap renders BUILD_HEAP_MB for the startup log. 0 is not a heap of
+// nothing but no cap at all - Node then takes a quarter of the memory per
+// build - so it is spelled out rather than printed as "0 MB".
+func describeHeap(mb int) string {
+	if mb == 0 {
+		return "left to Node"
+	}
+	return strconv.Itoa(mb) + " MB"
 }
