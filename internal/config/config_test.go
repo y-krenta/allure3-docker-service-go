@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"log"
+	"strings"
 	"testing"
 	"time"
 )
@@ -138,6 +141,43 @@ func TestGetEnvAsBool(t *testing.T) {
 
 			if got := getEnvAsBool("TEST_BOOL", tt.def); got != tt.want {
 				t.Errorf("getEnvAsBool(%q, %v) = %v, want %v", tt.value, tt.def, got, tt.want)
+			}
+		})
+	}
+}
+
+// BUILD_HEAP_MB is in MiB, and a value that small is a mistake rather than a
+// choice - most likely someone who read the unit as GB. Accepting it would
+// start the service cleanly and fail every build with "JavaScript heap out of
+// memory", so anything from 1 to 255 falls back to the default with a warning.
+// 0 is not a mistake: it leaves the heap to Node.
+func TestLoadBuildHeapMB(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+		warns bool
+	}{
+		{value: "0", want: 0},
+		{value: "1", want: 2048, warns: true},
+		{value: "2", want: 2048, warns: true},
+		{value: "255", want: 2048, warns: true},
+		{value: "256", want: 256},
+		{value: "-1", want: 2048, warns: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("BUILD_HEAP_MB", tt.value)
+			var logs bytes.Buffer
+			prev := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(prev) })
+
+			if got := Load().BuildHeapMB; got != tt.want {
+				t.Errorf("BUILD_HEAP_MB=%s: BuildHeapMB = %d, want %d", tt.value, got, tt.want)
+			}
+			if warned := strings.Contains(logs.String(), "BUILD_HEAP_MB"); warned != tt.warns {
+				t.Errorf("BUILD_HEAP_MB=%s: warning logged = %v, want %v; log:\n%s", tt.value, warned, tt.warns, logs.String())
 			}
 		})
 	}
