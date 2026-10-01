@@ -31,6 +31,47 @@ func writeResult(t *testing.T, root, id, name, content string) {
 	}
 }
 
+// writeReport publishes a stand-in report for id, dated at: both the
+// reports/latest directory and its index.html carry that mtime, so the test
+// holds whichever of the two the watcher reads.
+func writeReport(t *testing.T, root, id string, at time.Time) {
+	t.Helper()
+
+	dir := projects.LatestReportDir(root, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	index := filepath.Join(dir, "index.html")
+	if err := os.WriteFile(index, []byte("<html></html>"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", index, err)
+	}
+	for _, p := range []string{index, dir} {
+		if err := os.Chtimes(p, at, at); err != nil {
+			t.Fatalf("chtimes %s: %v", p, err)
+		}
+	}
+}
+
+// dateResults sets the mtime of every file in id's results directory to at.
+func dateResults(t *testing.T, root, id string, at time.Time) {
+	t.Helper()
+
+	dir := projects.ResultsDir(root, id)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read %s: %v", dir, err)
+	}
+	for _, e := range entries {
+		if err := os.Chtimes(filepath.Join(dir, e.Name()), at, at); err != nil {
+			t.Fatalf("chtimes %s: %v", e.Name(), err)
+		}
+	}
+}
+
+// upToDate is a report date later than any result a test writes, for tests
+// that need the warm-up pass to find nothing to build and only remember.
+var upToDate = time.Now().Add(time.Hour)
+
 // recorder is a StartFunc that remembers which projects it was asked to build
 // and answers with a canned error. It is mutex-guarded because Run calls it
 // from its own goroutine.
@@ -174,9 +215,14 @@ func TestScanMissingDirReturnsError(t *testing.T) {
 	}
 }
 
-func TestSweepFirstPassOnlyRemembers(t *testing.T) {
+// A restart must not rebuild every project: results already published in a
+// report newer than all of them are only remembered.
+func TestSweepWarmUpSkipsAnUpToDateReport(t *testing.T) {
 	root := t.TempDir()
+	base := time.Now().Add(-2 * time.Hour)
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	dateResults(t, root, "proj", base)
+	writeReport(t, root, "proj", base.Add(time.Hour))
 
 	rec := &recorder{}
 	seen := map[string]fingerprint{}
@@ -191,9 +237,53 @@ func TestSweepFirstPassOnlyRemembers(t *testing.T) {
 	}
 }
 
+// Results uploaded after the last report - while the service was down, or in
+// the first interval after it came up - are a change the warm-up pass is the
+// only one to see. Remembering them as the baseline would leave them unbuilt
+// until the next upload.
+func TestSweepWarmUpBuildsResultsNewerThanTheReport(t *testing.T) {
+	root := t.TempDir()
+	base := time.Now().Add(-2 * time.Hour)
+	writeResult(t, root, "proj", "a-result.json", "{}")
+	dateResults(t, root, "proj", base.Add(time.Hour))
+	writeReport(t, root, "proj", base)
+
+	rec := &recorder{}
+	seen := map[string]fingerprint{}
+
+	sweep(context.Background(), root, seen, rec.start, true)
+
+	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
+		t.Fatalf("warm-up pass started builds for %v, want [proj]", got)
+	}
+
+	// The build it started covers these results; the next tick must not
+	// start another for the same files.
+	sweep(context.Background(), root, seen, rec.start, false)
+
+	if got := rec.calls(); len(got) != 1 {
+		t.Errorf("calls after an unchanged tick = %v, want the build not to be repeated", got)
+	}
+}
+
+func TestSweepWarmUpBuildsResultsThatHaveNoReport(t *testing.T) {
+	root := t.TempDir()
+	writeResult(t, root, "proj", "a-result.json", "{}")
+
+	rec := &recorder{}
+	seen := map[string]fingerprint{}
+
+	sweep(context.Background(), root, seen, rec.start, true)
+
+	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
+		t.Errorf("warm-up pass started builds for %v, want [proj]", got)
+	}
+}
+
 func TestSweepStartsOnChange(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
 
 	rec := &recorder{}
 	seen := map[string]fingerprint{}
@@ -218,6 +308,7 @@ func TestSweepStartsOnChange(t *testing.T) {
 func TestSweepKeepsFingerprintWhenAlreadyRunning(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
 
 	rec := &recorder{err: report.ErrAlreadyRunning}
 	seen := map[string]fingerprint{}
@@ -247,6 +338,7 @@ func TestSweepDoesNotLogAlreadyRunningAsAnError(t *testing.T) {
 
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
 	rec := &recorder{err: fmt.Errorf("%w: proj", report.ErrAlreadyRunning)}
 	seen := map[string]fingerprint{}
 
@@ -262,6 +354,7 @@ func TestSweepDoesNotLogAlreadyRunningAsAnError(t *testing.T) {
 func TestSweepKeepsFingerprintOnError(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
 
 	rec := &recorder{err: errors.New("boom")}
 	seen := map[string]fingerprint{}
@@ -279,6 +372,7 @@ func TestSweepKeepsFingerprintOnError(t *testing.T) {
 func TestSweepConsumesAChangeWithNothingLeftToBuild(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
 
 	rec := &recorder{err: report.ErrNoResults}
 	seen := map[string]fingerprint{}
@@ -391,6 +485,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 func TestRunStartsBuildAfterWarmUp(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
+	writeReport(t, root, "proj", upToDate)
 
 	started := make(chan string, 4)
 	start := func(_ context.Context, id string) error {

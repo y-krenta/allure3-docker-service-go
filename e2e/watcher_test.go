@@ -18,7 +18,6 @@ func TestWatcherBuildsUploadedResults(t *testing.T) {
 	id := projectID(t)
 
 	c.createProject(id)
-	time.Sleep(2 * time.Second)
 
 	c.upload(id, passed(1), failed(2))
 	c.waitForReport(id, 2, 1, 1)
