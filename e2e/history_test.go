@@ -11,15 +11,8 @@ func TestHistoryAccumulatesAcrossRuns(t *testing.T) {
 	id := projectID(t)
 
 	c.createProject(id)
-	for _, run := range [][]result{
-		{passed(1), failed(2), passed(3)},
-		{passed(1), passed(2)},
-	} {
-		c.clearResults(id)
-		c.upload(id, run...)
-		c.startGeneration(id)
-		c.requireSucceeded(id)
-	}
+	c.run(id, passed(1), failed(2), passed(3))
+	c.run(id, passed(1), passed(2))
 
 	var builds struct {
 		Builds []string `json:"builds"`

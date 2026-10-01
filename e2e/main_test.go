@@ -276,6 +276,14 @@ func (c *client) startGeneration(id string) {
 	c.do(c.request(http.MethodPost, "/projects/"+id+"/generation", nil), http.StatusAccepted)
 }
 
+func (c *client) run(id string, results ...result) {
+	c.t.Helper()
+	c.clearResults(id)
+	c.upload(id, results...)
+	c.startGeneration(id)
+	c.requireSucceeded(id)
+}
+
 type generation struct {
 	State string `json:"state"`
 	Error string `json:"error"`
