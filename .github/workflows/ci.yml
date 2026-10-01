@@ -17,13 +17,8 @@ jobs:
         os:
           - ubuntu-latest
           - macos-latest
-          - windows-latest
 
     runs-on: ${{ matrix.os }}
-
-    defaults:
-      run:
-        shell: bash
 
     steps:
       - uses: actions/checkout@v5
@@ -37,7 +32,6 @@ jobs:
       - run: go vet ./...
 
       - name: gofmt
-        if: runner.os == 'Linux'
         run: |
           unformatted=$(gofmt -l internal/ cmd/)
           if [ -n "$unformatted" ]; then
@@ -60,7 +54,6 @@ jobs:
           case "$RUNNER_OS" in
             Linux)   command -v google-chrome-stable ;;
             macOS)   test -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ;;
-            Windows) test -f "/c/Program Files/Google/Chrome/Application/chrome.exe" ;;
           esac || { echo "missing: Chrome"; exit 1; }
 
       - run: go test -race ./...
