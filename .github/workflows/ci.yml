@@ -35,7 +35,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l internal/ cmd/)
+          unformatted=$(gofmt -l internal/ cmd/ e2e/)
           if [ -n "$unformatted" ]; then
             echo "not gofmt'd:"
             echo "$unformatted"
@@ -58,9 +58,16 @@ jobs:
         if: runner.os == 'macOS'
         run: sudo safaridriver --enable
 
-      - run: go test -race ./...
+      - name: go test
+        shell: bash
         env:
           E2E_BROWSERS: ${{ matrix.browsers }}
+        run: |
+          go test -race -v ./... | tee test.log
+          if grep -- '--- SKIP' test.log; then
+            echo "tests were skipped: CI runs every test"
+            exit 1
+          fi
 
   image:
     needs: test
@@ -104,10 +111,17 @@ jobs:
           done
 
       - name: End-to-end tests against the image
+        shell: bash
         env:
           E2E_BASE_URL: http://localhost:5050
           E2E_WATCHER_URL: http://localhost:5051
-        run: go test -count=1 -v ./e2e/
+          E2E_BROWSERS: chrome firefox
+        run: |
+          go test -count=1 -v ./e2e/ | tee test.log
+          if grep -- '--- SKIP' test.log; then
+            echo "tests were skipped: CI runs every test"
+            exit 1
+          fi
 
       - name: Container logs
         if: always()
