@@ -34,7 +34,9 @@ type generationStatusResponse struct {
 //
 // Responds 202 with no body on success, 400 if id fails
 // projects.ValidateProjectID, 404 if the project has no results directory, and
-// 409 if a build for that project is already in flight. The 409 is deliberate:
+// 409 if a build for that project is already in flight. A 202 is also the
+// answer when every build slot is taken: the build waits in the generator for
+// one, and its status reads running meanwhile. The 409 is deliberate:
 // the running build may have started before this caller uploaded its results,
 // so reporting it as accepted would promise a report that never includes them.
 // Any other failure is logged and reported as 500 without detail.

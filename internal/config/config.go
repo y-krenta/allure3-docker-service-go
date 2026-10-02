@@ -22,7 +22,18 @@ type Config struct {
 	ProjectsDir          string        // Default path projects
 	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
 	PublicBaseURL        string        // Public address of this service; required, validated in main
+	MaxConcurrentBuilds  int           // Builds running at once across all projects; 0 means 1, negative falls back to the default
+	BuildHeapMB          int           // V8 old-space cap of one build in MiB; 0 leaves it to Node, 1-255 falls back to the default
 }
+
+const (
+	// defaultBuildHeapMB is enough for ~10 000 tests with 60 runs of history.
+	defaultBuildHeapMB = 2048
+	// minBuildHeapMB is the smallest BUILD_HEAP_MB taken at its word. Below
+	// it every build would fail with "JavaScript heap out of memory", so a
+	// smaller value is read as a mistake - most likely the unit taken for GB.
+	minBuildHeapMB = 256
+)
 
 // Load reads configuration from environment variables, applying defaults
 // for any that are unset (see the Config field comments for the env var
@@ -41,6 +52,13 @@ func Load() Config {
 	config.ProjectsDir = cmp.Or(os.Getenv("STATIC_CONTENT_PROJECTS"), "/app/projects")
 	config.AllureBin = cmp.Or(os.Getenv("ALLURE_BIN"), "allure")
 	config.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
+	config.MaxConcurrentBuilds = max(getEnvAsInt("MAX_CONCURRENT_BUILDS", 4), 1)
+	config.BuildHeapMB = getEnvAsInt("BUILD_HEAP_MB", defaultBuildHeapMB)
+	if config.BuildHeapMB > 0 && config.BuildHeapMB < minBuildHeapMB {
+		log.Printf("[WARN] BUILD_HEAP_MB=%d, below %d, using %d", config.BuildHeapMB, minBuildHeapMB,
+			defaultBuildHeapMB)
+		config.BuildHeapMB = defaultBuildHeapMB
+	}
 
 	return config
 

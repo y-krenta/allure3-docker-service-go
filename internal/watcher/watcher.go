@@ -3,6 +3,7 @@ package watcher
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"time"
@@ -91,7 +92,7 @@ func sweep(ctx context.Context, projectsDir string, seen map[string]fingerprint,
 			continue
 		}
 
-		if warm {
+		if warm && !unbuilt(projectsDir, id, fp) {
 			seen[id] = fp
 			continue
 		}
@@ -112,4 +113,30 @@ func sweep(ctx context.Context, projectsDir string, seen map[string]fingerprint,
 		}
 
 	}
+}
+
+// unbuilt reports whether the results fingerprinted in fp still need a build:
+// there are some, and the project has no published report or one older than
+// the newest of them. The warm-up pass asks it so that results uploaded while
+// the service was down, or in the first interval after it came up, are built
+// rather than taken for the baseline and left without a report until the
+// next upload.
+//
+// The comparison is strict: results dated the same as the report are taken
+// as already in it. A report that cannot be stat'ed for any reason other than
+// not existing counts as unbuilt too - a needless build costs a few seconds,
+// skipping one loses a run's report.
+func unbuilt(projectsDir, id string, fp fingerprint) bool {
+	if fp.count == 0 {
+		return false
+	}
+	info, err := os.Stat(projects.LatestReportDir(projectsDir, id))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+		slog.Error("watcher: failed to stat report", "project_id", id, "err", err)
+		return true
+	}
+	return fp.newest > info.ModTime().UnixNano()
 }

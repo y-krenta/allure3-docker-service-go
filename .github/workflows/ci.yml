@@ -11,7 +11,16 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            browsers: chrome firefox
+          - os: macos-latest
+            browsers: chrome safari
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v5
@@ -26,7 +35,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l internal/ cmd/)
+          unformatted=$(gofmt -l internal/ cmd/ e2e/)
           if [ -n "$unformatted" ]; then
             echo "not gofmt'd:"
             echo "$unformatted"
@@ -41,11 +50,24 @@ jobs:
 
       - name: Assert the report toolchain is present
         run: |
-          for bin in node allure google-chrome-stable; do
+          for bin in node allure; do
             command -v "$bin" || { echo "missing: $bin"; exit 1; }
           done
 
-      - run: go test -race ./...
+      - name: Enable Safari automation
+        if: runner.os == 'macOS'
+        run: sudo safaridriver --enable
+
+      - name: go test
+        shell: bash
+        env:
+          E2E_BROWSERS: ${{ matrix.browsers }}
+        run: |
+          go test -race -v ./... | tee test.log
+          if grep -- '--- SKIP' test.log; then
+            echo "tests were skipped: CI runs every test"
+            exit 1
+          fi
 
   image:
     needs: test
@@ -64,13 +86,45 @@ jobs:
           load: true
           tags: ci:${{ github.sha }}
 
-      - name: Smoke test the image
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Start the image
         run: |
-          docker run -d --name smoke -p 5050:5050 -e PUBLIC_BASE_URL=http://localhost:5050 ci:${{ github.sha }}
-          for _ in $(seq 30); do
-            curl -fsS http://localhost:5050/health && ok=1 && break
-            sleep 1
+          docker run -d --name e2e -p 5050:5050 \
+            -e PUBLIC_BASE_URL=http://localhost:5050 \
+            -e MAX_CONCURRENT_BUILDS=1 \
+            -e CHECK_RESULTS_EVERY_SECONDS=0 \
+            ci:${{ github.sha }}
+          docker run -d --name e2e-watcher -p 5051:5050 \
+            -e PUBLIC_BASE_URL=http://localhost:5051 \
+            -e MAX_CONCURRENT_BUILDS=1 \
+            -e CHECK_RESULTS_EVERY_SECONDS=1 \
+            ci:${{ github.sha }}
+          for port in 5050 5051; do
+            for _ in $(seq 30); do
+              curl -fsS "http://localhost:$port/health" && continue 2
+              sleep 1
+            done
+            exit 1
           done
-          docker logs smoke
-          docker rm -f smoke
-          test -n "$ok"
+
+      - name: End-to-end tests against the image
+        shell: bash
+        env:
+          E2E_BASE_URL: http://localhost:5050
+          E2E_WATCHER_URL: http://localhost:5051
+          E2E_BROWSERS: chrome firefox
+        run: |
+          go test -count=1 -v ./e2e/ | tee test.log
+          if grep -- '--- SKIP' test.log; then
+            echo "tests were skipped: CI runs every test"
+            exit 1
+          fi
+
+      - name: Container logs
+        if: always()
+        run: |
+          docker logs e2e
+          docker logs e2e-watcher

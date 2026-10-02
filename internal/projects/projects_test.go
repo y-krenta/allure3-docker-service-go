@@ -18,39 +18,33 @@ func TestValidateProjectID(t *testing.T) {
 		id      string
 		wantErr bool
 	}{
-		// valid basic
+
 		{"numeric", "1234567890", false},
 		{"single digit", "1", false},
 		{"single letter", "a", false},
 		{"word", "demo", false},
 		{"default", "default", false},
 
-		// valid separators inside
 		{"hyphen inside", "my-project", false},
 		{"underscore inside", "my_project", false},
 		{"space inside", "my project", false},
 		{"mixed separators", "my_project-1 demo", false},
 		{"leading zeros", "000123", false},
 
-		// length boundaries
 		{"length 199", strings.Repeat("a", 199), false},
 		{"length 200", strings.Repeat("a", 200), false},
 		{"length 201", strings.Repeat("a", 201), true},
 
-		// invalid empty
 		{"empty", "", true},
 
-		// invalid start
 		{"leading hyphen", "-abc", true},
 		{"leading underscore", "_abc", true},
 		{"leading space", " abc", true},
 
-		// invalid end
 		{"trailing hyphen", "abc-", true},
 		{"trailing underscore", "abc_", true},
 		{"trailing space", "abc ", true},
 
-		// invalid characters
 		{"uppercase letters", "ABC123", true},
 		{"tab", "abc\t123", true},
 		{"newline", "abc\n123", true},
@@ -88,35 +82,29 @@ func TestSanitizeResultFileName(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
-		// valid names
+
 		{"simple json", "8f2c-result.json", "8f2c-result.json", false},
 		{"letters digits dot dash underscore", "abc_123-test.json", "abc_123-test.json", false},
 		{"single character", "a", "a", false},
 		{"max length 255", strings.Repeat("a", 255), strings.Repeat("a", 255), false},
 
-		// filepath.Base sanitization
 		{"unix traversal", "../../etc/passwd", "passwd", false},
 		{"unix nested path", "dir/sub/file.json", "file.json", false},
 		{"trailing slash", "dir/", "dir", false},
 
-		// hidden and dot-only names allowed by current regexp
 		{"hidden file", ".hidden.json", ".hidden.json", false},
 		{"many dots", "....", "....", false},
 
-		// platform-dependent backslash handling on Unix
 		{"windows traversal on unix", `..\..\etc\passwd`, "", true},
 		{"windows style path on unix", `dir\sub\file.json`, "", true},
 
-		// unsafe names
 		{"empty", "", "", true},
 		{"dot", ".", "", true},
 		{"dot dot", "..", "", true},
 		{"path separator", string(filepath.Separator), "", true},
 
-		// too long
 		{"length 256", strings.Repeat("a", 256), "", true},
 
-		// invalid characters
 		{"space", "rep ort.json", "", true},
 		{"tab", "rep\tort.json", "", true},
 		{"newline", "rep\nort.json", "", true},
@@ -162,11 +150,6 @@ func ExampleSanitizeResultFileName() {
 		fmt.Printf("%q -> %q, %v\n", in, name, err)
 	}
 
-	// Output:
-	// "8f2c-result.json" -> "8f2c-result.json", <nil>
-	// "../../etc/passwd" -> "passwd", <nil>
-	// ".." -> "", unsafe file name ".."
-	// "rep ort.json" -> "", invalid character in file name: "rep ort.json"
 }
 
 func TestCreateDir(t *testing.T) {
@@ -288,10 +271,7 @@ func TestClearResults(t *testing.T) {
 }
 
 func TestClearHistory(t *testing.T) {
-	// writeArchive creates <baseDir>/<id>/reports/<name>/index.html so an
-	// archive is a non-empty directory, the same shape a real build leaves -
-	// os.Remove refuses to delete a directory that isn't empty, so a test
-	// against an empty one would not catch that mistake.
+
 	writeArchive := func(t *testing.T, base, id, name string) {
 		t.Helper()
 		dir := filepath.Join(ReportsDir(base, id), name)
@@ -377,13 +357,9 @@ func TestClearHistory(t *testing.T) {
 	})
 }
 
-// TestHistoryFileStaysOutOfResults guards the one property of the history
-// path that is not a matter of taste. Every build appends to this file, and
-// the watcher rebuilds a project whenever the listing of its results
-// directory changes — put the two together and each build schedules the next
-// one, forever. Moving the file under ResultsDir compiles, passes every other
-// test, and only shows up in production as a project that rebuilds itself in
-// a loop.
+// Every build appends to the history file, and the watcher rebuilds on any
+// change under results: a history file there would have each build schedule
+// the next one, forever.
 func TestHistoryFileStaysOutOfResults(t *testing.T) {
 	base := t.TempDir()
 
@@ -395,10 +371,10 @@ func TestHistoryFileStaysOutOfResults(t *testing.T) {
 	}
 }
 
+// CleanTmp clears what killed builds left in each project's .tmp, and leaves
+// alone anything this service did not create.
 func TestCleanTmp(t *testing.T) {
-	// stageTmp creates <base>/<id>/.tmp/build-1/index.html, the shape a build
-	// killed mid-flight leaves behind: a non-empty nested directory, which
-	// os.Remove would refuse to delete.
+
 	stageTmp := func(t *testing.T, base, id string) string {
 		t.Helper()
 		tmp := TmpRoot(base, id)
@@ -412,9 +388,6 @@ func TestCleanTmp(t *testing.T) {
 		return tmp
 	}
 
-	// captureLog redirects the standard logger into a buffer for the length of
-	// one subtest. CleanTmp reports a project it could not clean by logging,
-	// so the log is the only place that behaviour is observable.
 	captureLog := func(t *testing.T) *bytes.Buffer {
 		t.Helper()
 		var buf bytes.Buffer
@@ -432,10 +405,7 @@ func TestCleanTmp(t *testing.T) {
 			}
 			staged = append(staged, stageTmp(t, base, id))
 		}
-		// ReadDir returns entries sorted by name, and an uppercase R sorts
-		// before a lowercase a: this file is seen before any project, so a
-		// sweep that stops at the first non-project instead of skipping it
-		// cleans nothing at all.
+
 		if err := os.WriteFile(filepath.Join(base, "README.txt"), []byte("not a project"), 0644); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
@@ -506,12 +476,7 @@ func TestCleanTmp(t *testing.T) {
 		if err := os.WriteFile(loose, []byte("not a project"), 0644); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
-		// Uppercase and a leading dot both fail ValidateProjectID, so these
-		// directories were not created by this service. Their .tmp must
-		// survive: sweeping them would mean deleting a stranger's data.
-		// A regular file whose name is a valid project ID: the name passes
-		// ValidateProjectID, so only the IsDir check keeps CleanTmp from
-		// trying to remove <base>/alpha/.tmp and logging about it.
+
 		if err := os.WriteFile(filepath.Join(base, "alpha"), []byte("not a project"), 0644); err != nil {
 			t.Fatalf("setup: %v", err)
 		}
@@ -554,10 +519,7 @@ func TestCleanTmp(t *testing.T) {
 			}
 			stageTmp(t, base, id)
 		}
-		// Removing .tmp means unlinking an entry from its parent, so it is the
-		// project directory that has to lose write permission, not .tmp
-		// itself. alpha sorts first, so the failure happens before beta is
-		// reached. Restored in cleanup, or t.TempDir cannot delete the tree.
+
 		locked := ProjectDir(base, "alpha")
 		if err := os.Chmod(locked, 0500); err != nil {
 			t.Fatalf("setup: %v", err)
@@ -589,11 +551,10 @@ func TestCleanTmp(t *testing.T) {
 	})
 }
 
+// After seeding, the target's history is exactly the source's - an empty one
+// included - with nothing left behind and nothing written outside baseDir.
 func TestSeedHistory(t *testing.T) {
-	// seedProject creates a project and, when content is not empty, gives it a
-	// history file holding exactly that. An empty string means the project
-	// exists but has never been built, which is the state the empty-source
-	// branch is about.
+
 	seedProject := func(t *testing.T, base, id, content string) {
 		t.Helper()
 		if err := CreateDir(base, id); err != nil {
@@ -607,12 +568,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	}
 
-	// projectFiles lists the names directly under a project directory.
-	// SeedHistory stages through a scratch file beside the destination, and
-	// nothing cleans that up later - Generate only clears TmpRoot - so a
-	// leftover is a leak that lives for the life of the volume. Comparing
-	// listings catches one under any name; asserting on the scratch name
-	// itself would only catch the name this test already guessed.
 	projectFiles := func(t *testing.T, base, id string) []string {
 		t.Helper()
 		entries, err := os.ReadDir(ProjectDir(base, id))
@@ -677,11 +632,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// The empty-source case is the one the postcondition is easiest to get
-	// wrong in: returning early on "nothing to copy" leaves the target holding
-	// a history the source does not have, and the next build then compares the
-	// target against its own previous run - the very comparison seeding is
-	// there to replace.
 	t.Run("source without history clears the target and reports ErrNoHistory", func(t *testing.T) {
 		base := t.TempDir()
 		seedProject(t, base, "src", "")
@@ -708,9 +658,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// A missing target must not be answered with ErrNoHistory: that error
-	// sends the caller looking at the source project, which is fine, while the
-	// real fault is a target that does not exist at all.
 	t.Run("missing target project reports fs.ErrNotExist, not ErrNoHistory", func(t *testing.T) {
 		base := t.TempDir()
 
@@ -760,9 +707,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// Seeding a project from itself would succeed and change nothing, so the
-	// refusal is about the arrangement, not the file: a project measured
-	// against its own previous build is exactly what seeding replaces.
 	t.Run("refuses to seed a project from itself", func(t *testing.T) {
 		base := t.TempDir()
 		seedProject(t, base, "dst", "{\"own\":true}\n")
@@ -781,10 +725,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// The deferred cleanup only earns its keep when the rename fails: on the
-	// happy path the rename moves the staging file away by itself. A
-	// directory sitting where the history file belongs is the cheapest way
-	// to make rename(2) refuse.
 	t.Run("leaves no staging file behind when the rename fails", func(t *testing.T) {
 		base := t.TempDir()
 		seedProject(t, base, "src", "{\"run\":1}\n")
@@ -810,10 +750,6 @@ func TestSeedHistory(t *testing.T) {
 		}
 	})
 
-	// Both IDs reach filepath.Join, so an unvalidated one climbs out of
-	// baseDir. The target is the dangerous half - it is written to and
-	// removed - but a source that escapes reads a file it has no business
-	// reading, so both are checked.
 	t.Run("rejects invalid IDs without touching the filesystem", func(t *testing.T) {
 		tests := []struct {
 			name         string
