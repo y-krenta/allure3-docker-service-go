@@ -20,15 +20,12 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
-// uploadFile is one part of a multipart body built by multipartBody.
 type uploadFile struct {
 	field   string
 	name    string
 	content string
 }
 
-// multipartBody renders files as a multipart/form-data body and returns it
-// together with the matching Content-Type header (which carries the boundary).
 func multipartBody(t *testing.T, files ...uploadFile) (io.Reader, string) {
 	t.Helper()
 
@@ -52,8 +49,6 @@ func multipartBody(t *testing.T, files ...uploadFile) (io.Reader, string) {
 	return &buf, w.FormDataContentType()
 }
 
-// newTestServer returns a Server backed by a fresh temp dir that already
-// contains the given projects, plus that dir.
 func newTestServer(t *testing.T, projectIDs ...string) (*Server, string) {
 	t.Helper()
 
@@ -64,15 +59,9 @@ func newTestServer(t *testing.T, projectIDs ...string) (*Server, string) {
 		}
 	}
 
-	// A real Generator rooted at the same dir, not a stub: deleteProject goes
-	// through it to take the project's lock, and these tests assert on what
-	// actually happened to the directory afterwards. The CLI name is never
-	// resolved because nothing here builds a report - only Generate and
-	// Version shell out.
 	return NewServer(dir, report.New(dir, "unused-cli", 0, "https://allure.example.test", 4, 0), RuntimeConfig{}, Versions{}), dir
 }
 
-// do sends one request to sendResults and returns the recorded response.
 func do(s *Server, id string, body io.Reader, contentType string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(http.MethodPost, "/projects/"+id+"/results", body)
 	r.SetPathValue("id", id)
@@ -247,8 +236,6 @@ func TestSendResults(t *testing.T) {
 		s, _ := newTestServer(t, "demo")
 		body, _ := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
 
-		// Media type passes the Content-Type check, but MultipartReader cannot
-		// split the body without the boundary parameter.
 		w := do(s, "demo", body, "multipart/form-data")
 
 		if w.Code != http.StatusBadRequest {
@@ -268,6 +255,10 @@ func TestSendResults(t *testing.T) {
 	})
 }
 
+// Each case is a way an upload must not corrupt the results directory: a
+// half-written file visible under its final name, a scratch file left behind,
+// a planted symlink, an empty re-post over a good result, two jobs writing one
+// fixed name at once.
 func TestSavePart(t *testing.T) {
 	t.Run("writes the whole stream", func(t *testing.T) {
 		root, err := os.OpenRoot(t.TempDir())
@@ -310,9 +301,7 @@ func TestSavePart(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "x.json")); !os.IsNotExist(err) {
 			t.Errorf("partially written file was kept (stat err = %v)", err)
 		}
-		// The scratch file has to go too. A failed upload that leaves its
-		// temporary behind would have every retry accumulate one more, and
-		// they all count towards the directory looking non-empty.
+
 		if _, err := os.Stat(filepath.Join(dir, "x.json.part")); !os.IsNotExist(err) {
 			t.Errorf("temporary file was kept (stat err = %v)", err)
 		}
@@ -351,12 +340,6 @@ func TestSavePart(t *testing.T) {
 		}
 		defer func() { _ = root.Close() }()
 
-		// Look at the directory from inside the copy, once the first chunk
-		// has been written but before the last one has: this is the window a
-		// build or the watcher would be reading results in, and the file must
-		// not be visible under its final name yet. Copying straight into that
-		// name would show them a truncated result and have them take it for a
-		// malformed one.
 		var seenEarly bool
 		src := io.MultiReader(
 			strings.NewReader(`{"uuid":`),
@@ -397,13 +380,6 @@ func TestSavePart(t *testing.T) {
 		}
 		defer func() { _ = root.Close() }()
 
-		// Publishing by rename replaces a planted symlink rather than being
-		// refused by it: rename acts on the link itself, never on what it
-		// points at. That is a change from copying into the final name
-		// directly, which os.Root rejected outright - but only in what the
-		// call answers, not in where the bytes land. What matters is asserted
-		// below: nothing is written outside the root either way, and the link
-		// is gone rather than left aimed out of it.
 		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err != nil {
 			t.Fatalf("savePart: %v", err)
 		}
@@ -424,10 +400,7 @@ func TestSavePart(t *testing.T) {
 	t.Run("does not write through a symlink planted under a scratch name", func(t *testing.T) {
 		dir := t.TempDir()
 		outside := filepath.Join(t.TempDir(), "escaped.json")
-		// The scratch name carries a random suffix, so an attacker cannot
-		// plant anything under it in advance - this is the name it used to
-		// have. Either way the scratch file goes through root, which refuses
-		// any name that resolves outside it.
+
 		if err := os.Symlink(outside, filepath.Join(dir, "evil.json.part")); err != nil {
 			t.Fatalf("setup symlink: %v", err)
 		}
@@ -466,9 +439,6 @@ func TestSavePart(t *testing.T) {
 			t.Fatalf("savePart = (%d, %v), want (0, nil)", n, err)
 		}
 
-		// A CI job re-posting a result it truncated locally must not destroy
-		// the copy the service already holds: publishing an empty file over it
-		// replaces a good result with nothing.
 		if got := string(readFileT(t, filepath.Join(dir, "x.json"))); got != "good" {
 			t.Errorf("x.json = %q, want the previous content %q", got, "good")
 		}
@@ -485,11 +455,6 @@ func TestSavePart(t *testing.T) {
 		}
 		defer func() { _ = root.Close() }()
 
-		// environment.properties, categories.json and executor.json are fixed
-		// names, unlike the UUID-named results: two CI jobs uploading one of
-		// them at the same time land on the same final name. A scratch name
-		// shared between them would have both copying into one file at
-		// independent offsets, publishing the interleaving.
 		a := strings.Repeat("a", 64<<10)
 		b := strings.Repeat("b", 64<<10)
 
@@ -515,7 +480,6 @@ func TestSavePart(t *testing.T) {
 	})
 }
 
-// readFileT reads path or fails the test.
 func readFileT(t *testing.T, path string) []byte {
 	t.Helper()
 
@@ -526,8 +490,6 @@ func readFileT(t *testing.T, path string) []byte {
 	return data
 }
 
-// dirEntries lists the names in dir, so a test can assert that a scratch file
-// was cleaned up rather than left behind.
 func dirEntries(t *testing.T, dir string) []string {
 	t.Helper()
 
@@ -542,14 +504,10 @@ func dirEntries(t *testing.T, dir string) []string {
 	return names
 }
 
-// errReader always fails, standing in for a connection that drops mid-upload.
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
-// hookReader runs fn once, just before the first byte is read out of r. It is
-// how these tests reach into the middle of an upload: whatever fn does happens
-// with the transfer already under way but not yet finished.
 type hookReader struct {
 	r    io.Reader
 	fn   func()
@@ -565,8 +523,6 @@ func TestHandleMaxBytesError(t *testing.T) {
 	t.Run("answers 413 and names the limit", func(t *testing.T) {
 		w := httptest.NewRecorder()
 
-		// Wrapped on purpose: the real error arrives from io.Copy inside
-		// savePart, already wrapped with %w, so errors.As must unwrap it.
 		err := fmt.Errorf("copy data: %w", &http.MaxBytesError{Limit: 1024})
 
 		if !handleMaxBytesError(w, err) {
@@ -592,15 +548,11 @@ func TestHandleMaxBytesError(t *testing.T) {
 	})
 }
 
-// deadlineRecorder is a ResponseWriter that supports read deadlines and
-// records every deadline set on it. httptest.ResponseRecorder alone does not
-// support deadlines, so without this stub the handler can only ever be tested
-// on the "not supported" path.
 type deadlineRecorder struct {
 	*httptest.ResponseRecorder
 	deadlines      []time.Time
 	writeDeadlines []time.Time
-	err            error // returned instead of recording, when set
+	err            error
 }
 
 func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
@@ -611,9 +563,6 @@ func (d *deadlineRecorder) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-// SetWriteDeadline records the deadlines exportReport lifts the response past
-// the server's WriteTimeout with; read and write deadlines are kept apart so a
-// test asserting on one is not satisfied by the other.
 func (d *deadlineRecorder) SetWriteDeadline(t time.Time) error {
 	if d.err != nil {
 		return d.err
@@ -626,6 +575,8 @@ func newDeadlineRecorder() *deadlineRecorder {
 	return &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 }
 
+// Every read pushes the deadline idle ahead of itself, and a deadline never
+// moves backwards.
 func TestIdleTimeoutBody(t *testing.T) {
 	t.Run("refreshes the deadline on every read", func(t *testing.T) {
 		rec := newDeadlineRecorder()
@@ -639,7 +590,6 @@ func TestIdleTimeoutBody(t *testing.T) {
 
 		before := time.Now()
 
-		// Read in 2-byte chunks: 3 chunks plus the read that reports EOF.
 		reads := 0
 		buf := make([]byte, 2)
 		for {
@@ -660,8 +610,6 @@ func TestIdleTimeoutBody(t *testing.T) {
 			t.Fatalf("got %d deadlines for %d reads, want one per read", len(rec.deadlines), reads)
 		}
 
-		// Every deadline must sit roughly idle ahead of the moment it was set,
-		// and they must never move backwards.
 		for i, d := range rec.deadlines {
 			if d.Before(before.Add(idle)) {
 				t.Errorf("deadline %d = %v, want at least %v ahead", i, d, idle)
@@ -714,13 +662,14 @@ func TestSendResultsSetsReadDeadlines(t *testing.T) {
 		t.Errorf("stat uploaded file: %v", err)
 	}
 
-	// One deadline comes from the handler's support probe; the rest prove the
-	// body was actually wrapped and refreshed while the upload was read.
 	if len(rec.deadlines) < 2 {
 		t.Fatalf("got %d deadlines, want the probe plus at least one per-read refresh", len(rec.deadlines))
 	}
 }
 
+// The server's WriteTimeout counts from the request headers, so it covers the
+// upload as well as the reply. Unless the handler lifts it, a long upload
+// lands on disk and the client is told nothing.
 func TestSendResultsLiftsTheWriteDeadline(t *testing.T) {
 	s, _ := newTestServer(t, "demo")
 	body, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
@@ -737,11 +686,6 @@ func TestSendResultsLiftsTheWriteDeadline(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body)
 	}
 
-	// The server's WriteTimeout is counted from the moment the request headers
-	// are read, so it covers the upload itself and not just the reply. A
-	// gigabyte-capped upload does not fit in it, and the handler has to push
-	// the deadline out or the response to a long upload cannot be written at
-	// all - every file lands on disk and the client is told nothing.
 	if len(rec.writeDeadlines) != 1 {
 		t.Fatalf("got %d write deadlines, want exactly 1", len(rec.writeDeadlines))
 	}
@@ -750,14 +694,12 @@ func TestSendResultsLiftsTheWriteDeadline(t *testing.T) {
 	}
 }
 
+// A project deleted while its upload is being read gets exactly one 404, not a
+// second error glued onto a response already sent.
 func TestSendResultsProjectDeletedMidUpload(t *testing.T) {
 	s, dir := newTestServer(t, "demo")
 	body, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
 
-	// The handler opens its os.Root on the results directory before it reads
-	// the first byte of the body, so removing the project here lands the
-	// upload exactly where a concurrent DELETE /projects/demo would: a root
-	// held open on a directory that is no longer attached to anything.
 	hooked := &hookReader{r: body, fn: func() {
 		if err := os.RemoveAll(filepath.Join(dir, "demo")); err != nil {
 			t.Errorf("removing the project mid-upload: %v", err)
@@ -769,11 +711,7 @@ func TestSendResultsProjectDeletedMidUpload(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
 	}
-	// Exactly one message, not two. The 404 branch has to return: falling
-	// through into the generic error handling below it writes a second
-	// http.Error onto a response that has already been sent, which
-	// net/http reports as a superfluous WriteHeader call and which leaves
-	// the client reading both answers glued together.
+
 	if got := w.Body.String(); got != "project not found\n" {
 		t.Errorf("body = %q, want just the 404 message", got)
 	}

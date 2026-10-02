@@ -482,6 +482,8 @@ func TestRunAllureCapsTheBuildHeap(t *testing.T) {
 	}
 }
 
+// The CLI prints its diagnostic last, so stderr capped in size has to keep its
+// end, not its start.
 func TestRunAllureKeepsTheTailOfAFloodedStderr(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliFloodStderr), "demo")
 
@@ -1186,18 +1188,11 @@ func TestStartReturnsBeforeTheBuildFinishes(t *testing.T) {
 	waitForState(t, g, "demo", StateSucceeded)
 }
 
-// cliExclusive is a slow CLI that fails if another copy of itself is running:
-// mkdir is atomic, so the second of two overlapping builds cannot create
-// lockDir and exits non-zero. It turns "the builds overlapped" into a failed
-// build instead of a timing measurement.
 func cliExclusive(lockDir string) string {
 	return "#!/bin/sh\nmkdir \"" + lockDir + "\" || exit 1\nsleep 0.5\n" +
 		"printf 'fresh' > \"$4/index.html\"\nrmdir \"" + lockDir + "\"\n"
 }
 
-// waitUntilFinished waits for projectID's build to leave StateRunning, and
-// returns its final status whichever way it went, so a test can report a
-// failed build as such instead of timing out waiting for a success.
 func waitUntilFinished(t *testing.T, g *Generator, projectID string) Status {
 	t.Helper()
 
@@ -1225,7 +1220,7 @@ func TestStartQueuesWhenAllSlotsAreTaken(t *testing.T) {
 			t.Fatalf("Start(%s) = %v, want nil - a full generator queues, it does not refuse", id, err)
 		}
 	}
-	// Accepted means running from the caller's side, queued or not.
+
 	if st, _ := g.Status("b"); st.State != StateRunning {
 		t.Errorf("status of the queued build = %q, want %q", st.State, StateRunning)
 	}
@@ -1238,21 +1233,20 @@ func TestStartQueuesWhenAllSlotsAreTaken(t *testing.T) {
 	}
 }
 
-// An export holds the project's lock for as long as its client takes to read
-// the zip. A build waiting behind it must not sit on a slot meanwhile, or the
-// other projects queue behind a build that is doing nothing.
+// A build queued behind its project's lock - an export a slow client is still
+// reading - must not hold a build slot meanwhile, or other projects wait on a
+// build that is doing nothing.
 func TestBuildWaitingForItsProjectHoldsNoSlot(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "a", "b")
 	g.slots = make(chan struct{}, 1)
 
 	lock := g.lockFor("a")
-	lock.Lock() // stands in for an export of a
+	lock.Lock()
 
 	if err := g.Start(t.Context(), "a"); err != nil {
 		t.Fatalf("Start(a) = %v, want nil", err)
 	}
-	// Give a's build time to get as far as it can - the project lock - so
-	// that if it took the slot on the way, it holds it by now.
+
 	time.Sleep(100 * time.Millisecond)
 
 	if err := g.Start(t.Context(), "b"); err != nil {
@@ -1266,13 +1260,13 @@ func TestBuildWaitingForItsProjectHoldsNoSlot(t *testing.T) {
 	waitForState(t, g, "a", StateSucceeded)
 }
 
-// The cap lives in Generate, so a direct call obeys it as well as one made
-// through Start: with every slot taken it waits, and gives up only when its
-// context does.
+// The slot cap lives in Generate, so a direct call obeys it as well as one
+// made through Start: with every slot taken it waits, and gives up only when
+// its context does.
 func TestGenerateWaitsForASlotUntilItsContextEnds(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 	g.slots = make(chan struct{}, 1)
-	g.slots <- struct{}{} // the only slot, taken by a build elsewhere
+	g.slots <- struct{}{}
 
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
@@ -1662,6 +1656,8 @@ func TestDeleteForgetsTheProjectStatus(t *testing.T) {
 	}
 }
 
+// A build goroutine writing its status after the project was deleted must not
+// bring that status back.
 func TestDeleteOutlastsALateStatusWrite(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 

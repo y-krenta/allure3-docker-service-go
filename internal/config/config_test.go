@@ -9,9 +9,7 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	// t.Setenv with an empty value still counts as "set", so unset every var
-	// this package reads by pointing them at the empty string, which Load
-	// treats the same as absent.
+
 	for _, key := range []string{
 		"PORT", "SECURITY_ENABLED", "KEEP_HISTORY", "KEEP_HISTORY_LATEST",
 		"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
@@ -94,11 +92,9 @@ func TestLoadFallsBackOnGarbage(t *testing.T) {
 	}
 }
 
-// Zero is a valid int for getEnvAsInt, but zero slots would leave every build
-// waiting forever - Load lifts it to one, so the startup log shows what runs.
-// A negative value is a typo like any other and falls back to the default
-// with a warning, the same as every other int this package reads; it does
-// not mean "as few as possible".
+// Zero slots would leave every build waiting forever, so 0 is lifted to 1. A
+// negative value is a typo and falls back to the default with a warning, like
+// any other bad int.
 func TestLoadMaxConcurrentBuilds(t *testing.T) {
 	tests := []struct {
 		value string
@@ -146,11 +142,9 @@ func TestGetEnvAsBool(t *testing.T) {
 	}
 }
 
-// BUILD_HEAP_MB is in MiB, and a value that small is a mistake rather than a
-// choice - most likely someone who read the unit as GB. Accepting it would
-// start the service cleanly and fail every build with "JavaScript heap out of
-// memory", so anything from 1 to 255 falls back to the default with a warning.
-// 0 is not a mistake: it leaves the heap to Node.
+// BUILD_HEAP_MB is in MiB, and 1-255 is read as a mistake - most likely a
+// value meant in GB - that would fail every build out of heap. It falls back
+// to the default with a warning; 0 leaves the heap to Node.
 func TestLoadBuildHeapMB(t *testing.T) {
 	tests := []struct {
 		value string
@@ -233,8 +227,6 @@ func TestGetEnvAsDurationSeconds(t *testing.T) {
 		})
 	}
 
-	// A zero default cannot tell "sec <= 0" from "sec < 0" — both yield zero.
-	// A non-zero default makes the boundary observable.
 	t.Run("zero falls back to a non-zero default", func(t *testing.T) {
 		t.Setenv("TEST_DURATION", "0")
 

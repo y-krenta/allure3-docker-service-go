@@ -18,29 +18,23 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
-// stubGenerator is a reportGenerator whose answers are set by the test. The
-// real one would have to race an actual build to produce "already running" or
-// a failure, so the branches that matter here are unreachable through it.
 type stubGenerator struct {
-	startErr        error // returned by Start
-	clearErr        error // returned by ClearResults
-	clearHistoryErr error // returned by ClearHistory
-	exportErr       error // returned by ExportLatest
-	deleteErr       error // returned by Delete
+	startErr        error
+	clearErr        error
+	clearHistoryErr error
+	exportErr       error
+	deleteErr       error
 
-	status    report.Status // returned by Status
+	status    report.Status
 	hasStatus bool
 
-	// exportBody is written into the caller's writer before ExportLatest
-	// returns, so a test can tell "nothing was written" apart from "the
-	// body arrived and then the walk failed".
 	exportBody string
 
-	startedWith        []string // project IDs Start was called with, in order
-	clearedWith        []string // project IDs ClearResults was called with, in order
-	clearedHistoryWith []string // project IDs ClearHistory was called with, in order
-	exportedWith       []string // project IDs ExportLatest was called with, in order
-	deletedWith        []string // project IDs Delete was called with, in order
+	startedWith        []string
+	clearedWith        []string
+	clearedHistoryWith []string
+	exportedWith       []string
+	deletedWith        []string
 }
 
 func (g *stubGenerator) Start(_ context.Context, projectID string) error {
@@ -77,8 +71,6 @@ func (g *stubGenerator) ExportLatest(projectID string, w io.Writer) error {
 	return g.exportErr
 }
 
-// newStubServer returns a Server whose only working dependency is gen; the
-// report endpoints never touch projectsDir.
 func newStubServer(gen *stubGenerator) *Server {
 	return NewServer("unused-dir", gen, RuntimeConfig{}, Versions{})
 }
@@ -178,8 +170,6 @@ func TestGenerationStatus(t *testing.T) {
 	started := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
 	finished := started.Add(90 * time.Second)
 
-	// decode returns the response body as a map, so a test can assert which
-	// keys are present, not merely what they decode into.
 	decode := func(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 		t.Helper()
 
@@ -235,7 +225,7 @@ func TestGenerationStatus(t *testing.T) {
 
 		got := decode(t, w)
 		if _, ok := got["finished_at"]; ok {
-			// omitempty would have published the zero time here.
+
 			t.Errorf("finished_at = %v, want the key absent while the build runs", got["finished_at"])
 		}
 	})
@@ -271,9 +261,7 @@ func TestGenerationStatus(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
 		}
-		// The recorder keeps the first status code, so a handler that forgot
-		// to return after the 404 still looks like a 404 here. What gives it
-		// away is the status body encoded on top of the message.
+
 		if body := w.Body.String(); strings.Contains(body, "{") {
 			t.Errorf("body = %q, want the 404 message alone", body)
 		}
@@ -383,10 +371,7 @@ func TestClearHistory(t *testing.T) {
 	})
 
 	t.Run("success is not mistaken for a server error", func(t *testing.T) {
-		// A switch that catches the failure branches with "default" instead of
-		// "case err != nil" would fall through here too, since nil satisfies
-		// none of the named cases either. That mistake looks identical to a
-		// 500 on the one input that must never produce one: success.
+
 		s := newStubServer(&stubGenerator{})
 
 		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
@@ -398,9 +383,6 @@ func TestClearHistory(t *testing.T) {
 	})
 }
 
-// newExportServer returns a Server whose projectsDir is real - exportReport
-// stats the report directory itself before handing off - and whose generator is
-// gen. Every project named in withReport is created with a published report.
 func newExportServer(t *testing.T, gen *stubGenerator, withReport ...string) *Server {
 	t.Helper()
 
@@ -421,16 +403,7 @@ func newExportServer(t *testing.T, gen *stubGenerator, withReport ...string) *Se
 }
 
 func TestExportReport(t *testing.T) {
-	// httptest.ResponseRecorder carries no write deadline, so the handler's
-	// SetWriteDeadline fails on every one of these requests and logs a line.
-	// That is the point of only logging it: a recorder, and a connection whose
-	// deadline cannot be moved, both still get their archive.
 
-	// The stub body deliberately does not start with the "PK\x03\x04" magic of a
-	// real archive. httptest.ResponseRecorder sniffs the body with
-	// http.DetectContentType whenever the handler set no Content-Type of its
-	// own, and zip magic would make the sniffed value identical to the header
-	// under test - the assertion would then pass with the header deleted.
 	t.Run("serves the archive as an attachment", func(t *testing.T) {
 		gen := &stubGenerator{exportBody: "pretend archive bytes"}
 		s := newExportServer(t, gen, "demo")
@@ -452,9 +425,6 @@ func TestExportReport(t *testing.T) {
 		}
 	})
 
-	// Without the quotes an id containing a space - which ValidateProjectID
-	// allows - would end the filename token early, and the client would save
-	// the archive under the first word with no extension.
 	t.Run("names the download after the project", func(t *testing.T) {
 		gen := &stubGenerator{exportBody: "archive"}
 		s := newExportServer(t, gen, "my project")
@@ -470,7 +440,7 @@ func TestExportReport(t *testing.T) {
 
 	t.Run("a project with no published report answers 404", func(t *testing.T) {
 		gen := &stubGenerator{exportBody: "archive"}
-		s := newExportServer(t, gen) // project dir absent entirely
+		s := newExportServer(t, gen)
 
 		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
 			nil, map[string]string{"id": "demo"})
@@ -478,9 +448,7 @@ func TestExportReport(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
 		}
-		// Exact, not "contains": a missing return after the 404 would keep the
-		// recorded status at 404 - a recorder holds the first one written - and
-		// only show up as a second message appended to the body.
+
 		if got := w.Body.String(); got != "report not found\n" {
 			t.Errorf("body = %q, want only the 404 message", got)
 		}
@@ -504,11 +472,6 @@ func TestExportReport(t *testing.T) {
 		}
 	})
 
-	// The export is the one response that legitimately outlives the server's
-	// WriteTimeout: it may wait on a running build before it writes a byte, and
-	// then stream a large archive. http.ResponseController is how a single
-	// handler lifts that limit, and nothing else in the response shows whether
-	// it did - a connection cut at fifteen seconds looks like a truncated 200.
 	t.Run("extends the write deadline past the server default", func(t *testing.T) {
 		rec := newDeadlineRecorder()
 		r := httptest.NewRequest(http.MethodGet, "/projects/demo/report/export", nil)
@@ -525,9 +488,6 @@ func TestExportReport(t *testing.T) {
 		}
 	})
 
-	// Documents the deliberate limitation: the status is on the wire before the
-	// walk can fail, so a mid-archive failure reaches the client as a truncated
-	// 200 and lives on only in the log.
 	t.Run("a failure part-way through still reads as 200", func(t *testing.T) {
 		gen := &stubGenerator{
 			exportBody: "half an archive",
@@ -548,12 +508,6 @@ func TestExportReport(t *testing.T) {
 }
 
 func TestLatestReport(t *testing.T) {
-	// The Location is asserted whole, not by suffix or by "contains". Every
-	// way this handler can be written wrong produces a Location that is still
-	// plausible on sight: the project segment missing (an absolute target),
-	// "report" for "reports", or the trailing slash dropped - and the last one
-	// costs the client a second hop through ServeFileFS's own canonicalising
-	// 301 rather than failing outright.
 	t.Run("redirects to the published report", func(t *testing.T) {
 		s := newExportServer(t, &stubGenerator{}, "demo")
 
@@ -570,7 +524,7 @@ func TestLatestReport(t *testing.T) {
 	})
 
 	t.Run("a project with no published report answers 404", func(t *testing.T) {
-		s := newExportServer(t, &stubGenerator{}) // project dir absent entirely
+		s := newExportServer(t, &stubGenerator{})
 
 		w := callWithPath(s.latestReport, http.MethodGet, "/projects/demo/latest-report",
 			nil, map[string]string{"id": "demo"})
@@ -578,9 +532,6 @@ func TestLatestReport(t *testing.T) {
 		if w.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
 		}
-		// Exact, not "contains": a missing return after the 404 would leave the
-		// recorded status at 404 - a recorder keeps the first one written - and
-		// show up only as a Location header on a 404 body.
 		if got := w.Body.String(); got != "latest report not found\n" {
 			t.Errorf("body = %q, want only the 404 message", got)
 		}

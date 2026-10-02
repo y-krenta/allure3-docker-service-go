@@ -85,6 +85,8 @@ func (r *recorder) calls() []string {
 	return append([]string(nil), r.ids...)
 }
 
+// An empty results directory has to fingerprint like a project never seen: the
+// zero value a missing map entry reads as.
 func TestScanEmptyDirIsZeroFingerprint(t *testing.T) {
 	fp, err := scan(t.TempDir())
 	if err != nil {
@@ -198,6 +200,8 @@ func TestScanMissingDirReturnsError(t *testing.T) {
 	}
 }
 
+// A restart must not rebuild every project: results older than the published
+// report are only remembered.
 func TestSweepWarmUpSkipsAnUpToDateReport(t *testing.T) {
 	root := t.TempDir()
 	base := time.Now().Add(-2 * time.Hour)
@@ -218,6 +222,9 @@ func TestSweepWarmUpSkipsAnUpToDateReport(t *testing.T) {
 	}
 }
 
+// Results uploaded after the last report - while the service was down, or in
+// the first interval after it came up - are built by the warm-up pass, not
+// taken for the baseline.
 func TestSweepWarmUpBuildsResultsNewerThanTheReport(t *testing.T) {
 	root := t.TempDir()
 	base := time.Now().Add(-2 * time.Hour)
@@ -241,6 +248,7 @@ func TestSweepWarmUpBuildsResultsNewerThanTheReport(t *testing.T) {
 	}
 }
 
+// A report dated like its newest result is the build of those results.
 func TestSweepWarmUpSkipsAReportDatedLikeItsResults(t *testing.T) {
 	root := t.TempDir()
 	at := time.Now().Add(-time.Hour)
@@ -256,6 +264,8 @@ func TestSweepWarmUpSkipsAReportDatedLikeItsResults(t *testing.T) {
 	}
 }
 
+// A report the watcher cannot stat counts as unbuilt: a needless build costs
+// seconds, a skipped one loses the run.
 func TestSweepWarmUpBuildsWhenTheReportCannotBeChecked(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
@@ -312,6 +322,8 @@ func TestSweepStartsOnChange(t *testing.T) {
 	}
 }
 
+// A build refused as already running must not consume the change, or the
+// results that arrived during the previous build would never be published.
 func TestSweepKeepsFingerprintWhenAlreadyRunning(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
@@ -330,6 +342,9 @@ func TestSweepKeepsFingerprintWhenAlreadyRunning(t *testing.T) {
 	}
 }
 
+// A build already running is the normal case when CI starts one and the
+// watcher sees the same upload; logging it as an error would page someone
+// every tick.
 func TestSweepDoesNotLogAlreadyRunningAsAnError(t *testing.T) {
 	var logs bytes.Buffer
 	prev := slog.Default()
@@ -369,6 +384,8 @@ func TestSweepKeepsFingerprintOnError(t *testing.T) {
 	}
 }
 
+// An emptied results directory has nothing to build until the next upload
+// changes it again, so it is not retried every tick.
 func TestSweepConsumesAChangeWithNothingLeftToBuild(t *testing.T) {
 	root := t.TempDir()
 	writeResult(t, root, "proj", "a-result.json", "{}")
