@@ -10,9 +10,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
@@ -83,15 +85,9 @@ func TestStartGeneration(t *testing.T) {
 		w := callWithPath(s.startGeneration, http.MethodPost, "/projects/demo/generation",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body)
-		}
-		if got := w.Body.String(); got != "" {
-			t.Errorf("body = %q, want empty", got)
-		}
-		if len(gen.startedWith) != 1 || gen.startedWith[0] != "demo" {
-			t.Errorf("Start called with %v, want exactly one call for %q", gen.startedWith, "demo")
-		}
+		require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
+		assert.Empty(t, w.Body.String())
+		assert.Equal(t, []string{"demo"}, gen.startedWith)
 	})
 
 	t.Run("error mapping", func(t *testing.T) {
@@ -113,9 +109,7 @@ func TestStartGeneration(t *testing.T) {
 				w := callWithPath(s.startGeneration, http.MethodPost, "/projects/demo/generation",
 					nil, map[string]string{"id": "demo"})
 
-				if w.Code != tt.want {
-					t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.want, w.Body)
-				}
+				require.Equal(t, tt.want, w.Code, w.Body.String())
 			})
 		}
 	})
@@ -132,9 +126,7 @@ func TestStartGeneration(t *testing.T) {
 		}
 
 		running, noResults := bodies[report.ErrAlreadyRunning.Error()], bodies[report.ErrNoResults.Error()]
-		if running == noResults {
-			t.Fatalf("both 409s answer %q; a caller cannot tell a running build from empty results", running)
-		}
+		assert.NotEqual(t, running, noResults, "a caller cannot tell a running build from empty results")
 	})
 
 	t.Run("a server error keeps its cause to itself", func(t *testing.T) {
@@ -145,9 +137,7 @@ func TestStartGeneration(t *testing.T) {
 		w := callWithPath(s.startGeneration, http.MethodPost, "/projects/demo/generation",
 			nil, map[string]string{"id": "demo"})
 
-		if body := w.Body.String(); strings.Contains(body, "/app/projects") {
-			t.Errorf("body = %q, want no internal paths", body)
-		}
+		assert.NotContains(t, w.Body.String(), "/app/projects")
 	})
 
 	t.Run("a malformed id never reaches the generator", func(t *testing.T) {
@@ -157,12 +147,8 @@ func TestStartGeneration(t *testing.T) {
 		w := callWithPath(s.startGeneration, http.MethodPost, "/projects/BAD_ID/generation",
 			nil, map[string]string{"id": "BAD_ID"})
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
-		if len(gen.startedWith) != 0 {
-			t.Errorf("Start was called with %v, want no call at all", gen.startedWith)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		assert.Empty(t, gen.startedWith)
 	})
 }
 
@@ -174,9 +160,7 @@ func TestGenerationStatus(t *testing.T) {
 		t.Helper()
 
 		var got map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decoding %q: %v", w.Body, err)
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
 		return got
 	}
 
@@ -195,26 +179,14 @@ func TestGenerationStatus(t *testing.T) {
 			},
 		})
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
-		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-			t.Errorf("Content-Type = %q, want application/json", ct)
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 
 		got := decode(t, w)
-		if got["state"] != "succeeded" {
-			t.Errorf("state = %v, want succeeded", got["state"])
-		}
-		if got["started_at"] != started.Format(time.RFC3339Nano) {
-			t.Errorf("started_at = %v, want %v", got["started_at"], started.Format(time.RFC3339Nano))
-		}
-		if got["finished_at"] != finished.Format(time.RFC3339Nano) {
-			t.Errorf("finished_at = %v, want %v", got["finished_at"], finished.Format(time.RFC3339Nano))
-		}
-		if _, ok := got["error"]; ok {
-			t.Errorf("error = %v, want the key absent on a successful build", got["error"])
-		}
+		assert.Equal(t, "succeeded", got["state"])
+		assert.Equal(t, started.Format(time.RFC3339Nano), got["started_at"])
+		assert.Equal(t, finished.Format(time.RFC3339Nano), got["finished_at"])
+		assert.NotContains(t, got, "error")
 	})
 
 	t.Run("a running build has no finished_at at all", func(t *testing.T) {
@@ -223,11 +195,7 @@ func TestGenerationStatus(t *testing.T) {
 			status:    report.Status{State: report.StateRunning, StartedAt: started},
 		})
 
-		got := decode(t, w)
-		if _, ok := got["finished_at"]; ok {
-
-			t.Errorf("finished_at = %v, want the key absent while the build runs", got["finished_at"])
-		}
+		assert.NotContains(t, decode(t, w), "finished_at")
 	})
 
 	t.Run("a failed build is still 200 and carries the reason", func(t *testing.T) {
@@ -241,39 +209,25 @@ func TestGenerationStatus(t *testing.T) {
 			},
 		})
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d: reading the status succeeded, the build is what failed",
-				w.Code, http.StatusOK)
-		}
+		require.Equal(t, http.StatusOK, w.Code, "reading the status succeeded, the build is what failed")
 
 		got := decode(t, w)
-		if got["state"] != "failed" {
-			t.Errorf("state = %v, want failed", got["state"])
-		}
-		if got["error"] != "running allure: exit status 3, stderr: boom" {
-			t.Errorf("error = %v, want the build's own message", got["error"])
-		}
+		assert.Equal(t, "failed", got["state"])
+		assert.Equal(t, "running allure: exit status 3, stderr: boom", got["error"])
 	})
 
 	t.Run("a project nobody has generated is 404", func(t *testing.T) {
 		w := call(&stubGenerator{hasStatus: false})
 
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
-		}
-
-		if body := w.Body.String(); strings.Contains(body, "{") {
-			t.Errorf("body = %q, want the 404 message alone", body)
-		}
+		require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+		assert.NotContains(t, w.Body.String(), "{", "want the 404 message alone")
 	})
 
 	t.Run("a malformed id is 400", func(t *testing.T) {
 		w := callWithPath(newStubServer(&stubGenerator{}).generationStatus, http.MethodGet,
 			"/projects/BAD_ID/generation", nil, map[string]string{"id": "BAD_ID"})
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	})
 }
 
@@ -285,15 +239,9 @@ func TestClearHistory(t *testing.T) {
 		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body)
-		}
-		if got := w.Body.String(); got != "" {
-			t.Errorf("body = %q, want empty", got)
-		}
-		if len(gen.clearedHistoryWith) != 1 || gen.clearedHistoryWith[0] != "demo" {
-			t.Errorf("ClearHistory called with %v, want exactly one call for %q", gen.clearedHistoryWith, "demo")
-		}
+		require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
+		assert.Empty(t, w.Body.String())
+		assert.Equal(t, []string{"demo"}, gen.clearedHistoryWith)
 	})
 
 	t.Run("error mapping", func(t *testing.T) {
@@ -315,9 +263,7 @@ func TestClearHistory(t *testing.T) {
 				w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
 					nil, map[string]string{"id": "demo"})
 
-				if w.Code != tt.want {
-					t.Fatalf("status = %d, want %d (body: %s)", w.Code, tt.want, w.Body)
-				}
+				require.Equal(t, tt.want, w.Code, w.Body.String())
 			})
 		}
 	})
@@ -334,9 +280,7 @@ func TestClearHistory(t *testing.T) {
 		}
 
 		running, noResults := bodies[report.ErrAlreadyRunning.Error()], bodies[report.ErrNoResults.Error()]
-		if running == noResults {
-			t.Fatalf("both 409s answer %q; a caller cannot tell a running build from empty results", running)
-		}
+		assert.NotEqual(t, running, noResults, "a caller cannot tell a running build from empty results")
 	})
 
 	t.Run("a server error keeps its cause to itself", func(t *testing.T) {
@@ -347,12 +291,8 @@ func TestClearHistory(t *testing.T) {
 		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusInternalServerError, w.Body)
-		}
-		if body := w.Body.String(); strings.Contains(body, "/app/projects") {
-			t.Errorf("body = %q, want no internal paths", body)
-		}
+		require.Equal(t, http.StatusInternalServerError, w.Code, w.Body.String())
+		assert.NotContains(t, w.Body.String(), "/app/projects")
 	})
 
 	t.Run("a malformed id never reaches the generator", func(t *testing.T) {
@@ -362,12 +302,8 @@ func TestClearHistory(t *testing.T) {
 		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/BAD_ID/history/clean",
 			nil, map[string]string{"id": "BAD_ID"})
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
-		if len(gen.clearedHistoryWith) != 0 {
-			t.Errorf("ClearHistory was called with %v, want no call at all", gen.clearedHistoryWith)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		assert.Empty(t, gen.clearedHistoryWith)
 	})
 
 	t.Run("success is not mistaken for a server error", func(t *testing.T) {
@@ -377,9 +313,7 @@ func TestClearHistory(t *testing.T) {
 		w := callWithPath(s.clearHistory, http.MethodPost, "/projects/demo/history/clean",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusAccepted, w.Body)
-		}
+		require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
 	})
 }
 
@@ -388,16 +322,10 @@ func newExportServer(t *testing.T, gen *stubGenerator, withReport ...string) *Se
 
 	dir := t.TempDir()
 	for _, id := range withReport {
-		if err := projects.CreateDir(dir, id); err != nil {
-			t.Fatalf("setup project %q: %v", id, err)
-		}
+		require.NoError(t, projects.CreateDir(dir, id))
 		latest := projects.LatestReportDir(dir, id)
-		if err := os.MkdirAll(latest, 0o755); err != nil {
-			t.Fatalf("setup report for %q: %v", id, err)
-		}
-		if err := os.WriteFile(filepath.Join(latest, "index.html"), []byte("<html>"), 0o644); err != nil {
-			t.Fatalf("setup report for %q: %v", id, err)
-		}
+		require.NoError(t, os.MkdirAll(latest, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(latest, "index.html"), []byte("<html>"), 0o644))
 	}
 	return NewServer(dir, gen, RuntimeConfig{}, Versions{})
 }
@@ -411,18 +339,10 @@ func TestExportReport(t *testing.T) {
 		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
-		if got := w.Header().Get("Content-Type"); got != "application/zip" {
-			t.Errorf("Content-Type = %q, want %q", got, "application/zip")
-		}
-		if got := w.Body.String(); got != gen.exportBody {
-			t.Errorf("body = %q, want the archive the generator wrote (%q)", got, gen.exportBody)
-		}
-		if len(gen.exportedWith) != 1 || gen.exportedWith[0] != "demo" {
-			t.Errorf("ExportLatest called with %v, want exactly one call for %q", gen.exportedWith, "demo")
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, "application/zip", w.Header().Get("Content-Type"))
+		assert.Equal(t, gen.exportBody, w.Body.String())
+		assert.Equal(t, []string{"demo"}, gen.exportedWith)
 	})
 
 	t.Run("names the download after the project", func(t *testing.T) {
@@ -432,10 +352,7 @@ func TestExportReport(t *testing.T) {
 		w := callWithPath(s.exportReport, http.MethodGet, "/projects/my%20project/report/export",
 			nil, map[string]string{"id": "my project"})
 
-		want := `attachment; filename="my project-report.zip"`
-		if got := w.Header().Get("Content-Disposition"); got != want {
-			t.Errorf("Content-Disposition = %q, want %q", got, want)
-		}
+		assert.Equal(t, `attachment; filename="my project-report.zip"`, w.Header().Get("Content-Disposition"))
 	})
 
 	t.Run("a project with no published report answers 404", func(t *testing.T) {
@@ -445,16 +362,9 @@ func TestExportReport(t *testing.T) {
 		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
-		}
-
-		if got := w.Body.String(); got != "report not found\n" {
-			t.Errorf("body = %q, want only the 404 message", got)
-		}
-		if len(gen.exportedWith) != 0 {
-			t.Errorf("ExportLatest was called with %v, want no call at all", gen.exportedWith)
-		}
+		require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+		assert.Equal(t, "report not found\n", w.Body.String())
+		assert.Empty(t, gen.exportedWith)
 	})
 
 	t.Run("an invalid project id answers 400", func(t *testing.T) {
@@ -464,12 +374,8 @@ func TestExportReport(t *testing.T) {
 		w := callWithPath(s.exportReport, http.MethodGet, "/projects/Bad%20Id/report/export",
 			nil, map[string]string{"id": "Bad Id"})
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
-		if len(gen.exportedWith) != 0 {
-			t.Errorf("ExportLatest was called with %v, want no call at all", gen.exportedWith)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		assert.Empty(t, gen.exportedWith)
 	})
 
 	t.Run("extends the write deadline past the server default", func(t *testing.T) {
@@ -480,12 +386,8 @@ func TestExportReport(t *testing.T) {
 		before := time.Now()
 		newExportServer(t, &stubGenerator{exportBody: "archive"}, "demo").exportReport(rec, r)
 
-		if len(rec.writeDeadlines) != 1 {
-			t.Fatalf("write deadlines set = %v, want exactly one", rec.writeDeadlines)
-		}
-		if got := rec.writeDeadlines[0].Sub(before); got < exportWriteDeadline {
-			t.Errorf("write deadline set %v ahead, want at least %v", got, exportWriteDeadline)
-		}
+		require.Len(t, rec.writeDeadlines, 1)
+		assert.GreaterOrEqual(t, rec.writeDeadlines[0].Sub(before), exportWriteDeadline)
 	})
 
 	t.Run("a failure part-way through still reads as 200", func(t *testing.T) {
@@ -498,12 +400,8 @@ func TestExportReport(t *testing.T) {
 		w := callWithPath(s.exportReport, http.MethodGet, "/projects/demo/report/export",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-		}
-		if got := w.Body.String(); got != "half an archive" {
-			t.Errorf("body = %q, want the bytes written before the failure", got)
-		}
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "half an archive", w.Body.String())
 	})
 }
 
@@ -514,13 +412,8 @@ func TestLatestReport(t *testing.T) {
 		w := callWithPath(s.latestReport, http.MethodGet, "/projects/demo/latest-report",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusFound {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusFound, w.Body)
-		}
-		want := "/projects/demo/reports/latest/"
-		if got := w.Header().Get("Location"); got != want {
-			t.Errorf("Location = %q, want %q", got, want)
-		}
+		require.Equal(t, http.StatusFound, w.Code, w.Body.String())
+		assert.Equal(t, "/projects/demo/reports/latest/", w.Header().Get("Location"))
 	})
 
 	t.Run("a project with no published report answers 404", func(t *testing.T) {
@@ -529,15 +422,9 @@ func TestLatestReport(t *testing.T) {
 		w := callWithPath(s.latestReport, http.MethodGet, "/projects/demo/latest-report",
 			nil, map[string]string{"id": "demo"})
 
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
-		}
-		if got := w.Body.String(); got != "latest report not found\n" {
-			t.Errorf("body = %q, want only the 404 message", got)
-		}
-		if got := w.Header().Get("Location"); got != "" {
-			t.Errorf("Location = %q, want no redirect header at all", got)
-		}
+		require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+		assert.Equal(t, "latest report not found\n", w.Body.String())
+		assert.Empty(t, w.Header().Get("Location"))
 	})
 
 	t.Run("an invalid project id answers 400", func(t *testing.T) {
@@ -546,11 +433,7 @@ func TestLatestReport(t *testing.T) {
 		w := callWithPath(s.latestReport, http.MethodGet, "/projects/Bad%20Id/latest-report",
 			nil, map[string]string{"id": "Bad Id"})
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
-		if got := w.Header().Get("Location"); got != "" {
-			t.Errorf("Location = %q, want no redirect header at all", got)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
+		assert.Empty(t, w.Header().Get("Location"))
 	})
 }
