@@ -140,7 +140,7 @@ The Allure CLI is resolved at startup with `exec.LookPath`; if it is missing, or
 
 ```
 2026/08/13 00:34:39 history limit 60, max concurrent builds 4, build heap 2048 MB
-2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.19.0)
+2026/08/13 00:34:39 allure /opt/homebrew/bin/allure (3.20.0)
 2026/08/13 00:34:39 Starting server on port 5050
 ```
 
@@ -198,12 +198,10 @@ The effective limits are printed at startup as `history limit N, max concurrent 
 
 ### The watcher
 
-With `CHECK_RESULTS_EVERY_SECONDS=N` the service polls every project's `results/` directory every `N` seconds and starts a build whenever its fingerprint (file count, total size, newest mtime) changes. The first sweep only records fingerprints, so a restart does not rebuild everything.
+With `CHECK_RESULTS_EVERY_SECONDS=N` the service polls every project's `results/` directory every `N` seconds and starts a build whenever its fingerprint (file count, total size, newest mtime) changes. The first sweep builds only the projects whose results are newer than their published report, or that have none — results uploaded while the service was down get a report — and takes the rest as the baseline, so a restart does not rebuild everything.
 
 - **On** (e.g. `3`) suits a **local** machine, where you drop results into the mount and want a report without calling anything.
 - **Off** (`0`) suits a **server fed by CI**: nothing regenerates until the pipeline asks for it, and a report then corresponds to exactly one execution. This is the default and what [`docker-compose.yml`](docker-compose.yml) ships with.
-
-A watcher build refused for lack of a slot is retried on the next sweep.
 
 ### Resource limits
 
@@ -302,7 +300,7 @@ curl -s http://localhost:5050/config
 # {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
 
 curl -s http://localhost:5050/version
-# {"allure_version":"3.19.0","service_version":"0.3.0"}
+# {"allure_version":"3.20.0","service_version":"0.4.1"}
 ```
 
 `/config` reports the subset of settings that actually influence behaviour. `/version` answers with both versions that describe a running container: `allure_version` is asked of the CLI itself (`allure --version`) at startup rather than read from a build-time file, and `service_version` is stamped into the binary when the image is built — a source build reports `dev`.
