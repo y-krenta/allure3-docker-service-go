@@ -14,9 +14,6 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-// writeLatestTree lays out a published report with nested directories, so the
-// assertions cover more than a single file sitting in the root: the prefix,
-// the path separator and the recursion all only show up below the top level.
 func writeLatestTree(t *testing.T, g *Generator, projectID string, files map[string]string) {
 	t.Helper()
 
@@ -32,9 +29,6 @@ func writeLatestTree(t *testing.T, g *Generator, projectID string, files map[str
 	}
 }
 
-// exportToReader runs ExportLatest into a buffer and hands back a reader over
-// the finished archive. Parsing the bytes is itself an assertion: a zip whose
-// central directory was never written - the writer left unclosed - fails here.
 func exportToReader(t *testing.T, g *Generator, projectID string) *zip.Reader {
 	t.Helper()
 
@@ -50,8 +44,6 @@ func exportToReader(t *testing.T, g *Generator, projectID string) *zip.Reader {
 	return zr
 }
 
-// archiveNames returns every entry name in the archive, sorted, so a test can
-// compare against an expected set without depending on walk order.
 func archiveNames(zr *zip.Reader) []string {
 	names := make([]string, 0, len(zr.File))
 	for _, f := range zr.File {
@@ -61,7 +53,6 @@ func archiveNames(zr *zip.Reader) []string {
 	return names
 }
 
-// readArchiveEntry returns the contents of one named entry.
 func readArchiveEntry(t *testing.T, zr *zip.Reader, name string) string {
 	t.Helper()
 
@@ -69,8 +60,7 @@ func readArchiveEntry(t *testing.T, zr *zip.Reader, name string) string {
 	if err != nil {
 		t.Fatalf("opening %q inside the archive: %v", name, err)
 	}
-	// Nothing to salvage from closing a reader: the read either produced the
-	// bytes or already failed the test above.
+
 	defer func() { _ = f.Close() }()
 
 	b, err := io.ReadAll(f)
@@ -117,10 +107,6 @@ func TestExportLatestPreservesFileContents(t *testing.T) {
 	}
 }
 
-// The walk visits the report root and every subdirectory before it reaches a
-// file. Each of those would become a junk entry - "demo-report/." for the root -
-// if directories were not skipped, and the root would additionally be handed to
-// io.Copy, which refuses a directory and aborts the export on its first call.
 func TestExportLatestSkipsDirectories(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 	writeLatestTree(t, g, "demo", map[string]string{
@@ -136,8 +122,6 @@ func TestExportLatestSkipsDirectories(t *testing.T) {
 	}
 }
 
-// A project whose id differs must not borrow another project's prefix: the
-// folder the client unpacks is named after what it asked for.
 func TestExportLatestNamesThePrefixAfterTheProject(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "other")
 	writeLatestTree(t, g, "other", map[string]string{"index.html": "<html>"})
@@ -149,9 +133,6 @@ func TestExportLatestNamesThePrefixAfterTheProject(t *testing.T) {
 	}
 }
 
-// The handler answers 404 from its own check before calling in, so this is the
-// narrow race where the report disappears afterwards. It has to surface as an
-// error rather than a silently empty archive.
 func TestExportLatestWithoutAReportIsAnError(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 
@@ -165,7 +146,6 @@ func TestExportLatestWaitsForARunningBuild(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 	writeLatestTree(t, g, "demo", map[string]string{"index.html": "<html>"})
 
-	// Stand in for a build in flight by holding the project's lock directly.
 	held := g.lockFor("demo")
 	held.Lock()
 
@@ -217,9 +197,9 @@ func TestExportLatestDoesNotBlockOtherProjects(t *testing.T) {
 	}
 }
 
-// An export running across a build would stitch its archive together from two
-// different reports. Holding the lock for the whole walk is what prevents that,
-// and a build finishing mid-export is exactly the case the lock exists for.
+// An export running across a build's swap would stitch its archive together
+// from two reports. Holding the project's lock for the whole walk makes it see
+// exactly one.
 func TestExportLatestAndGenerateDoNotOverlap(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
 	writeLatestTree(t, g, "demo", map[string]string{"index.html": "old"})
@@ -227,7 +207,6 @@ func TestExportLatestAndGenerateDoNotOverlap(t *testing.T) {
 	build := make(chan error, 1)
 	go func() { build <- g.Generate(context.Background(), "demo") }()
 
-	// Give the build time to claim the lock, then export against it.
 	time.Sleep(100 * time.Millisecond)
 
 	var buf bytes.Buffer
@@ -243,15 +222,11 @@ func TestExportLatestAndGenerateDoNotOverlap(t *testing.T) {
 		t.Fatalf("the exported bytes are not a readable zip archive: %v", err)
 	}
 
-	// The export waited, so it saw the report the build published - never a
-	// half-swapped mixture of the two.
 	if got := readArchiveEntry(t, zr, "demo-report/index.html"); got != "fresh" {
 		t.Errorf("archived index.html = %q, want the report the build published", got)
 	}
 }
 
-// The writer is handed nothing but io.Writer, so a failing one has to surface
-// as an error rather than a truncated archive reported as success.
 type failingWriter struct{ err error }
 
 func (w failingWriter) Write([]byte) (int, error) { return 0, w.err }

@@ -137,6 +137,13 @@ type Generator struct {
 	allureBin    string // name or path of the Allure CLI executable
 	historyLimit int    // past runs kept in a project's history; 0 discards it entirely
 	baseURL      string // public address of this service, absolute and without a trailing slash; validated in main
+	heapMB       int    // V8 old-space cap of one build in MiB, passed as --max-old-space-size; 0 leaves it to Node
+
+	// slots caps the builds running at once across all projects. Generate puts
+	// a token in only once it holds the project's lock, so a build still
+	// waiting for its project never sits on a slot, and takes it out when it
+	// returns. A full channel is a wait, never a refusal.
+	slots chan struct{}
 
 	// mu guards both maps below, and is held only for the map operation
 	// itself, never for a build: what a build holds for its whole duration is
@@ -186,12 +193,20 @@ var (
 // browser - see reportURLFor. Validating it is main's job, not this one's: the
 // package stays ignorant of the environment, and a bad value is a startup
 // failure rather than a report that builds and then dies in a tab.
-func New(projectsDir, allureBin string, historyLimit int, baseURL string) *Generator {
+//
+// maxBuilds is how many builds may run at once across all projects; below 1
+// it is 1, since a generator that can build nothing only fails later and more
+// obscurely. heapMB caps each build's V8 old space in MiB, 0 leaving it to
+// Node. Together they bound what builds take from memory: slots × heap, plus
+// what Node needs beyond its old space.
+func New(projectsDir, allureBin string, historyLimit int, baseURL string, maxBuilds, heapMB int) *Generator {
 	return &Generator{
 		projectsDir:  projectsDir,
 		allureBin:    allureBin,
 		historyLimit: historyLimit,
 		baseURL:      baseURL,
+		heapMB:       heapMB,
+		slots:        make(chan struct{}, max(maxBuilds, 1)),
 		locks:        make(map[string]*sync.Mutex),
 		statuses:     make(map[string]Status),
 	}
@@ -317,7 +332,13 @@ func (g *Generator) checkProject(projectID string) error {
 // Generate builds the report for projectID from the results currently on
 // disk. Builds of the same project are serialized: a caller that arrives
 // while another build is running waits for it to finish. Builds of different
-// projects run in parallel.
+// projects run in parallel, up to the generator's slot count.
+//
+// Past that count a build waits for a slot, holding its project's lock while
+// it does. The slot is taken after the lock and not before: an export can
+// hold the lock for minutes, and a slot taken first would sit idle all that
+// time while other projects queue behind it. The build timeout starts only
+// once the slot is held, so time spent queueing is not charged against it.
 //
 // The report is staged in the project's TmpRoot and only published once the
 // CLI has succeeded, by renaming it over the previous build. A build that
@@ -343,8 +364,8 @@ func (g *Generator) checkProject(projectID string) error {
 //
 // It returns ErrProjectNotFound (wrapped) if the project has no results
 // directory, ErrNoResults (wrapped) if that directory is empty, an error
-// wrapping ctx.Err() if the context is already done by
-// the time the project lock is acquired, and a descriptive error for any
+// wrapping ctx.Err() if the context is done by the time the project lock is
+// acquired or while waiting for a slot, and a descriptive error for any
 // other failure. Callers should match with errors.Is rather than on the
 // message.
 func (g *Generator) Generate(ctx context.Context, projectID string) error {
@@ -360,6 +381,13 @@ func (g *Generator) Generate(ctx context.Context, projectID string) error {
 	if ctx.Err() != nil {
 		return fmt.Errorf("waiting for project lock: %w", ctx.Err())
 	}
+
+	select {
+	case g.slots <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("waiting for build slot: %w", ctx.Err())
+	}
+	defer func() { <-g.slots }()
 
 	pathResultDir := projects.ResultsDir(g.projectsDir, projectID)
 	tmp := projects.TmpRoot(g.projectsDir, projectID)
@@ -538,6 +566,15 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, configPat
 	cmd.WaitDelay = cmdTimeout
 	cmd.Dir = os.TempDir()
 
+	// The cap goes after the operator's own NODE_OPTIONS: when a flag repeats,
+	// Node takes the last one, so a stray --max-old-space-size in the
+	// environment cannot lift the ceiling the slots are sized by. The repeated
+	// NODE_OPTIONS key in Env is fine too - exec keeps the last one.
+	if g.heapMB > 0 {
+		opts := strings.TrimSpace(os.Getenv("NODE_OPTIONS") + " --max-old-space-size=" + strconv.Itoa(g.heapMB))
+		cmd.Env = append(os.Environ(), "NODE_OPTIONS="+opts)
+	}
+
 	var stderr bytes.Buffer
 
 	cmd.Stderr = &stderr
@@ -570,10 +607,16 @@ func (g *Generator) runAllure(ctx context.Context, resultsDir, outDir, configPat
 //
 // It returns a validation error for a malformed project ID, ErrProjectNotFound
 // (wrapped) if the project has no results directory, ErrNoResults (wrapped) if
-// that directory is empty, and ErrAlreadyRunning
-// (wrapped) if a build for that project is already in flight. Rejecting the
-// second caller rather than queueing it keeps a burst of requests from piling
-// up builds that would each rebuild what the previous one just built.
+// that directory is empty, and ErrAlreadyRunning (wrapped) if a build for that
+// project is already in flight. Rejecting the second caller rather than
+// queueing it keeps a burst of requests from piling up builds that would each
+// rebuild what the previous one just built.
+//
+// Start never waits for a build slot. A build accepted while every slot is
+// taken waits for one inside Generate, showing StateRunning all the while.
+// That queue is bounded without a limit of its own: ErrAlreadyRunning allows
+// one build in flight per project, so no more builds ever wait than there are
+// projects.
 //
 // ctx is used for its values only. Start strips cancellation from it, so a
 // build is not tied to whoever asked for it: the client may disconnect, and the
@@ -589,6 +632,7 @@ func (g *Generator) Start(ctx context.Context, projectID string) error {
 	if err != nil {
 		return err
 	}
+
 	startedAt := time.Now()
 	resultStart := g.tryStart(projectID, startedAt)
 	if !resultStart {
@@ -622,7 +666,6 @@ func (g *Generator) Start(ctx context.Context, projectID string) error {
 
 		err = g.Generate(ctx, projectID)
 	}()
-
 	return nil
 }
 

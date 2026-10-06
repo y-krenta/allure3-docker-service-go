@@ -10,24 +10,6 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
-// The regression gate in CI does not compute anything itself: it reads the
-// "transition" field Allure writes for every test in widgets/tree.json and
-// blocks a merge request on "regressed" or "malfunctioned". That field is
-// another program's output, and nothing else in this repository looks at it -
-// so if a future Allure renames it, stops writing it into tree.json, or
-// changes what it compares against, every test here stays green while the gate
-// quietly stops blocking anything. A gate that fails open is worse than none,
-// because the pipeline still reports success.
-//
-// Hence a test on the whole arrangement rather than on any one piece: a
-// baseline project builds green, a second project is seeded from it, and the
-// second build flips one test to failed. Nothing is stubbed - only the real
-// CLI can say what the real CLI writes.
-
-// writeResultWithStatus drops one result file into a project's results dir,
-// under a caller-chosen history id and status. The history id is what ties a
-// test in one build to the same test in another: Allure compares by it, not by
-// name, and a seeded history is a file full of them.
 func writeResultWithStatus(t *testing.T, baseDir, projectID, historyID, status string, n int) {
 	t.Helper()
 
@@ -49,7 +31,6 @@ func writeResultWithStatus(t *testing.T, baseDir, projectID, historyID, status s
 	}
 }
 
-// treeLeaf is the part of a widgets/tree.json leaf the gate reads.
 type treeLeaf struct {
 	NodeID     string `json:"nodeId"`
 	Name       string `json:"name"`
@@ -57,7 +38,6 @@ type treeLeaf struct {
 	Transition string `json:"transition"`
 }
 
-// readTreeLeaves returns the leaves of a published report keyed by test name.
 func readTreeLeaves(t *testing.T, baseDir, projectID string) map[string]treeLeaf {
 	t.Helper()
 
@@ -81,6 +61,8 @@ func readTreeLeaves(t *testing.T, baseDir, projectID string) map[string]treeLeaf
 	return byName
 }
 
+// A test green on master and red in a merge request seeded from it comes out
+// regressed - and only that test, so the gate is not just reading a red suite.
 func TestSeededHistoryMakesAFailureRegressed(t *testing.T) {
 	allure := requireAllureCLI(t)
 
@@ -91,7 +73,7 @@ func TestSeededHistoryMakesAFailureRegressed(t *testing.T) {
 			t.Fatalf("CreateDir(%q) = %v", id, err)
 		}
 	}
-	g := New(dir, allure, testHistoryLimit, testBaseURL)
+	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	writeResultWithStatus(t, dir, baseline, "steady", "passed", 1)
 	writeResultWithStatus(t, dir, baseline, "breaks", "passed", 2)
@@ -118,15 +100,11 @@ func TestSeededHistoryMakesAFailureRegressed(t *testing.T) {
 	if broken.Transition != "regressed" {
 		t.Errorf("transition of the failing test = %q, want %q", broken.Transition, "regressed")
 	}
-	// The gate turns this into a link, so an empty one would point at the
-	// report's front page and name a test it never opens.
+
 	if broken.NodeID == "" {
 		t.Error("the regressed leaf carries no nodeId, so the gate cannot link to it")
 	}
 
-	// Without this half the assertion above would also pass on a build where
-	// every test came out regressed, which is what an unseeded project looks
-	// like when the whole suite is red.
 	steady, ok := leaves["steady"]
 	if !ok {
 		t.Fatalf("tree.json has no leaf named %q, only %v", "steady", leaves)
@@ -136,10 +114,9 @@ func TestSeededHistoryMakesAFailureRegressed(t *testing.T) {
 	}
 }
 
-// A project that keeps its own history compares each build against the one
-// before it, so a test failing in both is a change in neither - and the gate,
-// reading transitions, lets the second push through. Re-seeding before every
-// build is what closes that, and it only holds if the seed overwrites.
+// Against its own previous build, a test failing on two pushes to one merge
+// request is no change, and the gate would let the second through. It stays
+// regressed only because each seed overwrites the merge request's history.
 func TestReseedingKeepsASecondFailureRegressed(t *testing.T) {
 	allure := requireAllureCLI(t)
 
@@ -150,14 +127,13 @@ func TestReseedingKeepsASecondFailureRegressed(t *testing.T) {
 			t.Fatalf("CreateDir(%q) = %v", id, err)
 		}
 	}
-	g := New(dir, allure, testHistoryLimit, testBaseURL)
+	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	writeResultWithStatus(t, dir, baseline, "breaks", "passed", 1)
 	if err := g.Generate(t.Context(), baseline); err != nil {
 		t.Fatalf("Generate(baseline) = %v, want nil", err)
 	}
 
-	// Two pushes to the same merge request, each seeded and each red.
 	for push := 1; push <= 2; push++ {
 		if err := projects.ClearResults(dir, mr); err != nil {
 			t.Fatalf("push %d: ClearResults = %v, want nil", push, err)

@@ -1,18 +1,19 @@
 package config
 
 import (
+	"bytes"
+	"log"
+	"strings"
 	"testing"
 	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
-	// t.Setenv with an empty value still counts as "set", so unset every var
-	// this package reads by pointing them at the empty string, which Load
-	// treats the same as absent.
+
 	for _, key := range []string{
 		"PORT", "SECURITY_ENABLED", "KEEP_HISTORY", "KEEP_HISTORY_LATEST",
 		"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
-		"STATIC_CONTENT_PROJECTS", "ALLURE_BIN",
+		"STATIC_CONTENT_PROJECTS", "ALLURE_BIN", "MAX_CONCURRENT_BUILDS", "BUILD_HEAP_MB",
 	} {
 		t.Setenv(key, "")
 	}
@@ -30,6 +31,8 @@ func TestLoadDefaults(t *testing.T) {
 		DevMode:              false,
 		ProjectsDir:          "/app/projects",
 		AllureBin:            "allure",
+		MaxConcurrentBuilds:  4,
+		BuildHeapMB:          2048,
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -47,6 +50,8 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("STATIC_CONTENT_PROJECTS", "/data/projects")
 	t.Setenv("ALLURE_BIN", "/opt/allure/bin/allure")
+	t.Setenv("MAX_CONCURRENT_BUILDS", "2")
+	t.Setenv("BUILD_HEAP_MB", "3072")
 
 	got := Load()
 
@@ -61,6 +66,8 @@ func TestLoadFromEnv(t *testing.T) {
 		DevMode:              true,
 		ProjectsDir:          "/data/projects",
 		AllureBin:            "/opt/allure/bin/allure",
+		MaxConcurrentBuilds:  2,
+		BuildHeapMB:          3072,
 	}
 	if got != want {
 		t.Errorf("Load() = %+v, want %+v", got, want)
@@ -82,6 +89,29 @@ func TestLoadFallsBackOnGarbage(t *testing.T) {
 	}
 	if got.CheckResultsInterval != 0 {
 		t.Errorf("CheckResultsInterval = %v, want the 0 default", got.CheckResultsInterval)
+	}
+}
+
+// Zero slots would leave every build waiting forever, so 0 is lifted to 1. A
+// negative value is a typo and falls back to the default with a warning, like
+// any other bad int.
+func TestLoadMaxConcurrentBuilds(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+	}{
+		{value: "0", want: 1},
+		{value: "-1", want: 4},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("MAX_CONCURRENT_BUILDS", tt.value)
+
+			if got := Load().MaxConcurrentBuilds; got != tt.want {
+				t.Errorf("MAX_CONCURRENT_BUILDS=%s: MaxConcurrentBuilds = %d, want %d", tt.value, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -107,6 +137,41 @@ func TestGetEnvAsBool(t *testing.T) {
 
 			if got := getEnvAsBool("TEST_BOOL", tt.def); got != tt.want {
 				t.Errorf("getEnvAsBool(%q, %v) = %v, want %v", tt.value, tt.def, got, tt.want)
+			}
+		})
+	}
+}
+
+// BUILD_HEAP_MB is in MiB, and 1-255 is read as a mistake - most likely a
+// value meant in GB - that would fail every build out of heap. It falls back
+// to the default with a warning; 0 leaves the heap to Node.
+func TestLoadBuildHeapMB(t *testing.T) {
+	tests := []struct {
+		value string
+		want  int
+		warns bool
+	}{
+		{value: "0", want: 0},
+		{value: "1", want: 2048, warns: true},
+		{value: "2", want: 2048, warns: true},
+		{value: "255", want: 2048, warns: true},
+		{value: "256", want: 256},
+		{value: "-1", want: 2048, warns: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Setenv("BUILD_HEAP_MB", tt.value)
+			var logs bytes.Buffer
+			prev := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(prev) })
+
+			if got := Load().BuildHeapMB; got != tt.want {
+				t.Errorf("BUILD_HEAP_MB=%s: BuildHeapMB = %d, want %d", tt.value, got, tt.want)
+			}
+			if warned := strings.Contains(logs.String(), "BUILD_HEAP_MB"); warned != tt.warns {
+				t.Errorf("BUILD_HEAP_MB=%s: warning logged = %v, want %v; log:\n%s", tt.value, warned, tt.warns, logs.String())
 			}
 		})
 	}
@@ -162,8 +227,6 @@ func TestGetEnvAsDurationSeconds(t *testing.T) {
 		})
 	}
 
-	// A zero default cannot tell "sec <= 0" from "sec < 0" — both yield zero.
-	// A non-zero default makes the boundary observable.
 	t.Run("zero falls back to a non-zero default", func(t *testing.T) {
 		t.Setenv("TEST_DURATION", "0")
 

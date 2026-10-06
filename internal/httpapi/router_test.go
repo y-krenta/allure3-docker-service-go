@@ -9,13 +9,9 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
-// TestRoutes drives the real mux, so a mistyped pattern or a wildcard in the
-// wrong place shows up here instead of at service start.
 func TestRoutes(t *testing.T) {
 	s, _ := newTestServer(t, "demo")
-	// The generation routes need a generator that answers. hasStatus makes the
-	// status route reply 200, which a missing route could not fake: the mux
-	// answers an unregistered path with 404 too.
+
 	s.reports = &stubGenerator{hasStatus: true, status: report.Status{State: report.StateRunning}}
 	h := s.Routes()
 
@@ -38,9 +34,7 @@ func TestRoutes(t *testing.T) {
 		{name: "serve report", method: http.MethodGet, target: "/projects/demo/reports/latest/app.js", wantStatus: http.StatusNotFound},
 		{name: "start generation", method: http.MethodPost, target: "/projects/demo/generation", wantStatus: http.StatusAccepted},
 		{name: "generation status", method: http.MethodGet, target: "/projects/demo/generation", wantStatus: http.StatusOK},
-		// The source has no history, so the handler answers 409 - a status the
-		// mux cannot produce on its own, unlike the 404 an unregistered path
-		// gets.
+
 		{name: "seed history", method: http.MethodPost, target: "/projects/demo/history/seed",
 			body: strings.NewReader(`{"from_project_id":"baseline"}`), contentType: "application/json", wantStatus: http.StatusConflict},
 
@@ -155,15 +149,13 @@ func TestStatusRecorder(t *testing.T) {
 	}
 }
 
+// http.MaxBytesReader finds the connection's writer by a bare type assertion,
+// not an Unwrap walk, so the middleware has to hand it over for an oversized
+// upload to get a clean 413.
 func TestUnwrapResponseWriter(t *testing.T) {
 	inner := httptest.NewRecorder()
 	wrapped := &statusRecorder{ResponseWriter: &statusRecorder{ResponseWriter: inner}}
 
-	// http.MaxBytesReader reaches the writer that owns the connection with a
-	// bare type assertion instead of an Unwrap walk, so a handler that wants an
-	// oversized request answered with a clean 413 - and the connection closed
-	// rather than drained - has to hand it the writer underneath the
-	// middleware itself.
 	if got := unwrapResponseWriter(wrapped); got != http.ResponseWriter(inner) {
 		t.Errorf("unwrapResponseWriter returned %T, want the innermost *httptest.ResponseRecorder", got)
 	}
