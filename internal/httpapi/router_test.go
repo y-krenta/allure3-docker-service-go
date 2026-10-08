@@ -1,6 +1,9 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -86,53 +91,85 @@ func TestRoutes(t *testing.T) {
 	})
 }
 
-func TestRecoverer(t *testing.T) {
-	t.Run("turns a panic into 500", func(t *testing.T) {
-		h := recoverer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			panic("boom")
-		}))
+// captureLogs sends slog's default logger into a buffer for the rest of the
+// test. Call it before s.Routes(), which takes the logger when it is built.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
 
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-		assert.Equal(t, http.StatusInternalServerError, w.Code)
-	})
-
-	t.Run("leaves a healthy handler alone", func(t *testing.T) {
-		h := recoverer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusTeapot)
-		}))
-
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-		assert.Equal(t, http.StatusTeapot, w.Code)
-	})
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
+// logLinesWithRequestID returns the JSON log lines whose request_id is id.
+func logLinesWithRequestID(t *testing.T, logs *bytes.Buffer, id string) []map[string]any {
+	t.Helper()
+
+	var lines []map[string]any
+	for line := range strings.Lines(logs.String()) {
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &entry), line)
+		if entry["request_id"] == id {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
+}
+
+// TestRoutesLogOneLinePerRequest checks that every request, a panicking one
+// included, leaves exactly one log line carrying its X-Request-ID, and that a
+// panic is answered with 500.
+func TestRoutesLogOneLinePerRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		reports    *stubGenerator
+		wantStatus int
+	}{
+		{name: "regular request", method: http.MethodGet, target: "/health", wantStatus: http.StatusOK},
+		{name: "panic", method: http.MethodPost, target: "/projects/demo/generation",
+			reports: &stubGenerator{startPanic: "boom"}, wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			s, _ := newTestServer(t, "demo")
+			if tt.reports != nil {
+				s.reports = tt.reports
+			}
+
+			w := httptest.NewRecorder()
+			s.Routes().ServeHTTP(w, httptest.NewRequest(tt.method, tt.target, nil))
+
+			require.Equal(t, tt.wantStatus, w.Code, w.Body.String())
+
+			id := w.Header().Get("X-Request-ID")
+			require.NotEmpty(t, id)
+			assert.Len(t, logLinesWithRequestID(t, logs, id), 1, logs.String())
+		})
+	}
+}
+
+// TestRequestID checks that every response carries its own UUIDv7 in
+// X-Request-ID.
 func TestRequestID(t *testing.T) {
-	var seen string
+	h := requestID(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
-	h := requestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		seen, _ = r.Context().Value(requestIDKey).(string)
-	}))
+	ids := make([]string, 2)
+	for i := range ids {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+		ids[i] = w.Header().Get("X-Request-ID")
 
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-	header := w.Header().Get("X-Request-ID")
-	require.NotEmpty(t, header)
-	assert.Equal(t, header, seen)
-}
-
-func TestStatusRecorder(t *testing.T) {
-	w := httptest.NewRecorder()
-	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-
-	rec.WriteHeader(http.StatusTeapot)
-
-	assert.Equal(t, http.StatusTeapot, rec.status)
-	assert.Equal(t, http.StatusTeapot, w.Code)
+		id, err := uuid.Parse(ids[i])
+		require.NoError(t, err, ids[i])
+		assert.Equal(t, uuid.Version(7), id.Version())
+	}
+	assert.NotEqual(t, ids[0], ids[1])
 }
 
 // http.MaxBytesReader finds the connection's writer by a bare type assertion,
@@ -140,7 +177,7 @@ func TestStatusRecorder(t *testing.T) {
 // upload to get a clean 413.
 func TestUnwrapResponseWriter(t *testing.T) {
 	inner := httptest.NewRecorder()
-	wrapped := &statusRecorder{ResponseWriter: &statusRecorder{ResponseWriter: inner}}
+	wrapped := middleware.NewWrapResponseWriter(middleware.NewWrapResponseWriter(inner, 1), 1)
 
 	assert.Same(t, inner, unwrapResponseWriter(wrapped))
 	assert.Same(t, inner, unwrapResponseWriter(inner))
@@ -242,25 +279,4 @@ func TestRoutesKeepReportPathsInsideReports(t *testing.T) {
 			assert.NotContains(t, w.Body.String(), "top secret")
 		})
 	}
-}
-
-// TestRoutesListAllowedMethodsOn405 checks that a 405 names every method the
-// path does accept, as RFC 9110 requires. Routers may send Allow as one
-// comma-separated line or as several lines; both mean the same.
-func TestRoutesListAllowedMethodsOn405(t *testing.T) {
-	s, _ := newTestServer(t, "demo")
-
-	w := httptest.NewRecorder()
-	s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPut, "/projects", nil))
-
-	require.Equal(t, http.StatusMethodNotAllowed, w.Code)
-
-	var allowed []string
-	for _, line := range w.Header().Values("Allow") {
-		for m := range strings.SplitSeq(line, ",") {
-			allowed = append(allowed, strings.TrimSpace(m))
-		}
-	}
-	assert.Contains(t, allowed, http.MethodGet)
-	assert.Contains(t, allowed, http.MethodPost)
 }

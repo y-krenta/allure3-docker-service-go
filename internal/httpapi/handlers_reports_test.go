@@ -31,6 +31,7 @@ type stubGenerator struct {
 	hasStatus bool
 
 	exportBody string
+	startPanic any
 
 	startedWith        []string
 	clearedWith        []string
@@ -41,6 +42,9 @@ type stubGenerator struct {
 
 func (g *stubGenerator) Start(_ context.Context, projectID string) error {
 	g.startedWith = append(g.startedWith, projectID)
+	if g.startPanic != nil {
+		panic(g.startPanic)
+	}
 	return g.startErr
 }
 
