@@ -1,237 +1,174 @@
 package config
 
 import (
-	"bytes"
-	"log"
-	"strings"
+	"strconv"
 	"testing"
-	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-func TestLoadDefaults(t *testing.T) {
+// allKeys lists every variable Load reads, so a test can clear the ones the
+// developer's shell happens to set.
+var allKeys = []string{
+	"PORT", "SECURITY_ENABLED", "KEEP_HISTORY", "KEEP_HISTORY_LATEST",
+	"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
+	"STATIC_CONTENT_PROJECTS", "ALLURE_BIN", "PUBLIC_BASE_URL",
+	"MAX_CONCURRENT_BUILDS", "BUILD_HEAP_MB",
+}
 
-	for _, key := range []string{
-		"PORT", "SECURITY_ENABLED", "KEEP_HISTORY", "KEEP_HISTORY_LATEST",
-		"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
-		"STATIC_CONTENT_PROJECTS", "ALLURE_BIN", "MAX_CONCURRENT_BUILDS", "BUILD_HEAP_MB",
-	} {
+// clearEnv unsets every variable Load reads for the rest of the test.
+func clearEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range allKeys {
 		t.Setenv(key, "")
 	}
+}
 
-	got := Load()
+func TestLoadDefaults(t *testing.T) {
+	clearEnv(t)
 
-	want := Config{
-		Port:                 "5050",
-		SecurityEnable:       false,
-		KeepHistory:          true,
-		KeepHistoryLatest:    60,
-		CheckResultsInterval: 0,
-		OptimizeStorage:      false,
-		TLS:                  false,
-		DevMode:              false,
-		ProjectsDir:          "/app/projects",
-		AllureBin:            "allure",
-		MaxConcurrentBuilds:  4,
-		BuildHeapMB:          2048,
-	}
-	if got != want {
-		t.Errorf("Load() = %+v, want %+v", got, want)
-	}
+	got, err := Load()
+	require.NoError(t, err)
+
+	assert.Equal(t, Config{
+		Port:                     "5050",
+		SecurityEnable:           false,
+		KeepHistory:              true,
+		KeepHistoryLatest:        60,
+		CheckResultsEverySeconds: 0,
+		OptimizeStorage:          false,
+		TLS:                      false,
+		DevMode:                  false,
+		ProjectsDir:              "/app/projects",
+		AllureBin:                "allure",
+		PublicBaseURL:            "",
+		MaxConcurrentBuilds:      4,
+		BuildHeapMB:              2048,
+	}, got)
 }
 
 func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("PORT", "8080")
 	t.Setenv("SECURITY_ENABLED", "true")
-	t.Setenv("KEEP_HISTORY", "1")
+	t.Setenv("KEEP_HISTORY", "false")
 	t.Setenv("KEEP_HISTORY_LATEST", "5")
 	t.Setenv("CHECK_RESULTS_EVERY_SECONDS", "30")
-	t.Setenv("OPTIMIZE_STORAGE", "TRUE")
-	t.Setenv("TLS", "t")
+	t.Setenv("OPTIMIZE_STORAGE", "true")
+	t.Setenv("TLS", "true")
 	t.Setenv("DEV_MODE", "true")
 	t.Setenv("STATIC_CONTENT_PROJECTS", "/data/projects")
 	t.Setenv("ALLURE_BIN", "/opt/allure/bin/allure")
+	t.Setenv("PUBLIC_BASE_URL", "https://allure.example.com")
 	t.Setenv("MAX_CONCURRENT_BUILDS", "2")
 	t.Setenv("BUILD_HEAP_MB", "3072")
 
-	got := Load()
+	got, err := Load()
+	require.NoError(t, err)
 
-	want := Config{
-		Port:                 "8080",
-		SecurityEnable:       true,
-		KeepHistory:          true,
-		KeepHistoryLatest:    5,
-		CheckResultsInterval: 30 * time.Second,
-		OptimizeStorage:      true,
-		TLS:                  true,
-		DevMode:              true,
-		ProjectsDir:          "/data/projects",
-		AllureBin:            "/opt/allure/bin/allure",
-		MaxConcurrentBuilds:  2,
-		BuildHeapMB:          3072,
-	}
-	if got != want {
-		t.Errorf("Load() = %+v, want %+v", got, want)
-	}
+	assert.Equal(t, Config{
+		Port:                     "8080",
+		SecurityEnable:           true,
+		KeepHistory:              false,
+		KeepHistoryLatest:        5,
+		CheckResultsEverySeconds: 30,
+		OptimizeStorage:          true,
+		TLS:                      true,
+		DevMode:                  true,
+		ProjectsDir:              "/data/projects",
+		AllureBin:                "/opt/allure/bin/allure",
+		PublicBaseURL:            "https://allure.example.com",
+		MaxConcurrentBuilds:      2,
+		BuildHeapMB:              3072,
+	}, got)
 }
 
-func TestLoadFallsBackOnGarbage(t *testing.T) {
-	t.Setenv("SECURITY_ENABLED", "yes please")
-	t.Setenv("KEEP_HISTORY_LATEST", "many")
-	t.Setenv("CHECK_RESULTS_EVERY_SECONDS", "-1")
-
-	got := Load()
-
-	if got.SecurityEnable {
-		t.Errorf("SecurityEnable = true, want the false default")
-	}
-	if got.KeepHistoryLatest != 60 {
-		t.Errorf("KeepHistoryLatest = %d, want the 60 default", got.KeepHistoryLatest)
-	}
-	if got.CheckResultsInterval != 0 {
-		t.Errorf("CheckResultsInterval = %v, want the 0 default", got.CheckResultsInterval)
-	}
-}
-
-// Zero slots would leave every build waiting forever, so 0 is lifted to 1. A
-// negative value is a typo and falls back to the default with a warning, like
-// any other bad int.
-func TestLoadMaxConcurrentBuilds(t *testing.T) {
+// TestLoadRejectsBadValues checks that a value Load cannot use fails it, with
+// an error that names the variable and quotes the value as KEY="value", so an
+// operator sees what to fix without reading the code.
+func TestLoadRejectsBadValues(t *testing.T) {
 	tests := []struct {
+		key   string
 		value string
-		want  int
 	}{
-		{value: "0", want: 1},
-		{value: "-1", want: 4},
+		{"SECURITY_ENABLED", "yes please"},
+		{"KEEP_HISTORY", "maybe"},
+		{"KEEP_HISTORY_LATEST", "many"},
+		{"KEEP_HISTORY_LATEST", "-1"},
+		{"CHECK_RESULTS_EVERY_SECONDS", "30s"},
+		{"CHECK_RESULTS_EVERY_SECONDS", "-5"},
+		{"MAX_CONCURRENT_BUILDS", "0"},
+		{"MAX_CONCURRENT_BUILDS", "-1"},
+		{"BUILD_HEAP_MB", "1"},
+		{"BUILD_HEAP_MB", "255"},
+		{"BUILD_HEAP_MB", "-1"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.value, func(t *testing.T) {
-			t.Setenv("MAX_CONCURRENT_BUILDS", tt.value)
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
 
-			if got := Load().MaxConcurrentBuilds; got != tt.want {
-				t.Errorf("MAX_CONCURRENT_BUILDS=%s: MaxConcurrentBuilds = %d, want %d", tt.value, got, tt.want)
-			}
+			_, err := Load()
+
+			require.Error(t, err)
+			assert.ErrorContains(t, err, tt.key+"="+strconv.Quote(tt.value))
 		})
 	}
 }
 
-func TestGetEnvAsBool(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-		def   bool
-		want  bool
-	}{
-		{name: "unset keeps the default", value: "", def: true, want: true},
-		{name: "true", value: "true", def: false, want: true},
-		{name: "one", value: "1", def: false, want: true},
-		{name: "upper case", value: "TRUE", def: false, want: true},
-		{name: "false overrides a true default", value: "false", def: true, want: false},
-		{name: "zero overrides a true default", value: "0", def: true, want: false},
-		{name: "garbage keeps the default", value: "maybe", def: true, want: true},
-	}
+// TestLoadReportsEveryBadValue checks that one failed Load names every bad
+// variable, so an operator fixes them all in one restart.
+func TestLoadReportsEveryBadValue(t *testing.T) {
+	t.Run("unparsable values", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("KEEP_HISTORY", "maybe")
+		t.Setenv("KEEP_HISTORY_LATEST", "many")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_BOOL", tt.value)
+		_, err := Load()
 
-			if got := getEnvAsBool("TEST_BOOL", tt.def); got != tt.want {
-				t.Errorf("getEnvAsBool(%q, %v) = %v, want %v", tt.value, tt.def, got, tt.want)
-			}
-		})
-	}
-}
-
-// BUILD_HEAP_MB is in MiB, and 1-255 is read as a mistake - most likely a
-// value meant in GB - that would fail every build out of heap. It falls back
-// to the default with a warning; 0 leaves the heap to Node.
-func TestLoadBuildHeapMB(t *testing.T) {
-	tests := []struct {
-		value string
-		want  int
-		warns bool
-	}{
-		{value: "0", want: 0},
-		{value: "1", want: 2048, warns: true},
-		{value: "2", want: 2048, warns: true},
-		{value: "255", want: 2048, warns: true},
-		{value: "256", want: 256},
-		{value: "-1", want: 2048, warns: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.value, func(t *testing.T) {
-			t.Setenv("BUILD_HEAP_MB", tt.value)
-			var logs bytes.Buffer
-			prev := log.Writer()
-			log.SetOutput(&logs)
-			t.Cleanup(func() { log.SetOutput(prev) })
-
-			if got := Load().BuildHeapMB; got != tt.want {
-				t.Errorf("BUILD_HEAP_MB=%s: BuildHeapMB = %d, want %d", tt.value, got, tt.want)
-			}
-			if warned := strings.Contains(logs.String(), "BUILD_HEAP_MB"); warned != tt.warns {
-				t.Errorf("BUILD_HEAP_MB=%s: warning logged = %v, want %v; log:\n%s", tt.value, warned, tt.warns, logs.String())
-			}
-		})
-	}
-}
-
-func TestGetEnvAsInt(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-		want  int
-	}{
-		{name: "unset keeps the default", value: "", want: 25},
-		{name: "positive", value: "7", want: 7},
-		{name: "zero is allowed", value: "0", want: 0},
-		{name: "negative keeps the default", value: "-1", want: 25},
-		{name: "not a number keeps the default", value: "many", want: 25},
-		{name: "float keeps the default", value: "1.5", want: 25},
-		{name: "surrounding spaces keep the default", value: " 7 ", want: 25},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_INT", tt.value)
-
-			if got := getEnvAsInt("TEST_INT", 25); got != tt.want {
-				t.Errorf("getEnvAsInt(%q, 25) = %d, want %d", tt.value, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGetEnvAsDurationSeconds(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-		want  time.Duration
-	}{
-		{name: "unset keeps the default", value: "", want: 0},
-		{name: "seconds become a duration", value: "30", want: 30 * time.Second},
-		{name: "one second", value: "1", want: time.Second},
-		{name: "zero keeps the default", value: "0", want: 0},
-		{name: "negative keeps the default", value: "-5", want: 0},
-		{name: "not a number keeps the default", value: "30s", want: 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("TEST_DURATION", tt.value)
-
-			if got := getEnvAsDurationSeconds("TEST_DURATION", 0); got != tt.want {
-				t.Errorf("getEnvAsDurationSeconds(%q, 0) = %v, want %v", tt.value, got, tt.want)
-			}
-		})
-	}
-
-	t.Run("zero falls back to a non-zero default", func(t *testing.T) {
-		t.Setenv("TEST_DURATION", "0")
-
-		if got := getEnvAsDurationSeconds("TEST_DURATION", time.Minute); got != time.Minute {
-			t.Errorf("getEnvAsDurationSeconds(%q, 1m) = %v, want 1m", "0", got)
-		}
+		require.Error(t, err)
+		assert.ErrorContains(t, err, `KEEP_HISTORY="maybe"`)
+		assert.ErrorContains(t, err, `KEEP_HISTORY_LATEST="many"`)
 	})
+
+	t.Run("out-of-range values", func(t *testing.T) {
+		clearEnv(t)
+		t.Setenv("MAX_CONCURRENT_BUILDS", "0")
+		t.Setenv("BUILD_HEAP_MB", "100")
+
+		_, err := Load()
+
+		require.Error(t, err)
+		assert.ErrorContains(t, err, `MAX_CONCURRENT_BUILDS="0"`)
+		assert.ErrorContains(t, err, `BUILD_HEAP_MB="100"`)
+	})
+}
+
+// TestLoadAcceptsEdgeValues checks the smallest values that still mean
+// something: no history kept, the watcher off, a single build slot, the heap
+// left to Node, and the smallest heap taken at its word.
+func TestLoadAcceptsEdgeValues(t *testing.T) {
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{"KEEP_HISTORY_LATEST", "0"},
+		{"CHECK_RESULTS_EVERY_SECONDS", "0"},
+		{"MAX_CONCURRENT_BUILDS", "1"},
+		{"BUILD_HEAP_MB", "0"},
+		{"BUILD_HEAP_MB", "256"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key+"="+tt.value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(tt.key, tt.value)
+
+			_, err := Load()
+
+			assert.NoError(t, err)
+		})
+	}
 }
