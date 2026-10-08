@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestMergeRequestSeededFromMaster(t *testing.T) {
@@ -23,12 +25,8 @@ func TestMergeRequestSeededFromMaster(t *testing.T) {
 	c.requireSucceeded(mr)
 
 	report := "/projects/" + mr + "/reports/latest/"
-	if got := c.leaf(report, "Test 2").Transition; got != "regressed" {
-		t.Errorf("Test 2, passing on master and failing in the MR, has transition %q, want regressed", got)
-	}
-	if got := c.leaf(report, "Test 1").Transition; got != "" {
-		t.Errorf("Test 1, passing on both, has transition %q, want none", got)
-	}
+	assert.Equal(t, "regressed", c.leaf(report, "Test 2").Transition, "Test 2 passes on master and fails in the MR")
+	assert.Empty(t, c.leaf(report, "Test 1").Transition, "Test 1 passes on both")
 }
 
 func (c *client) seedHistory(target, source string) {

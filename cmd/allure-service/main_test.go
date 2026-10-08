@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 // The startup line is what an operator reads to learn how builds are capped.
 // With BUILD_HEAP_MB=0 there is no cap at all - Node takes a quarter of the
@@ -15,8 +19,6 @@ func TestDescribeHeap(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		if got := describeHeap(tt.mb); got != tt.want {
-			t.Errorf("describeHeap(%d) = %q, want %q", tt.mb, got, tt.want)
-		}
+		assert.Equal(t, tt.want, describeHeap(tt.mb), "describeHeap(%d)", tt.mb)
 	}
 }

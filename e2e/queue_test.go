@@ -1,6 +1,11 @@
 package e2e
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestTwoPipelinesShareOneSlot(t *testing.T) {
 	c := newClient(t)
@@ -21,9 +26,7 @@ func TestTwoPipelinesShareOneSlot(t *testing.T) {
 
 	var st generation
 	c.getJSON("/projects/"+a+"/generation", &st)
-	if st.State != "running" {
-		t.Fatalf("a's build was already %q when b was accepted - the queue was never exercised; give a more results", st.State)
-	}
+	require.Equal(t, "running", st.State, "a's build finished before b was accepted - the queue was never exercised; give a more results")
 
 	c.requireSucceeded(a)
 	c.requireSucceeded(b)
@@ -31,10 +34,8 @@ func TestTwoPipelinesShareOneSlot(t *testing.T) {
 	var sumA, sumB summary
 	c.getJSON("/projects/"+a+"/reports/latest/summary.json", &sumA)
 	c.getJSON("/projects/"+b+"/reports/latest/summary.json", &sumB)
-	if sumA.Stats.Total != 300 || sumA.Stats.Passed != 300 {
-		t.Errorf("a's report counts %+v, want 300 passed", sumA.Stats)
-	}
-	if sumB.Stats.Total != 2 || sumB.Stats.Failed != 2 {
-		t.Errorf("b's report counts %+v, want 2 failed", sumB.Stats)
-	}
+	assert.Equal(t, 300, sumA.Stats.Total)
+	assert.Equal(t, 300, sumA.Stats.Passed)
+	assert.Equal(t, 2, sumB.Stats.Total)
+	assert.Equal(t, 2, sumB.Stats.Failed)
 }

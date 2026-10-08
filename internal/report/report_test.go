@@ -3,17 +3,18 @@ package report
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
@@ -70,9 +71,7 @@ func fakeCLI(t *testing.T, body string) string {
 	t.Helper()
 
 	path := filepath.Join(t.TempDir(), "fake-allure")
-	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
-		t.Fatalf("writing fake CLI: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o755))
 	return path
 }
 
@@ -80,9 +79,7 @@ func readFile(t *testing.T, path string) []byte {
 	t.Helper()
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
@@ -97,9 +94,7 @@ func newTestGenerator(t *testing.T, allureBin string, projectIDs ...string) *Gen
 
 	dir := t.TempDir()
 	for _, id := range projectIDs {
-		if err := projects.CreateDir(dir, id); err != nil {
-			t.Fatalf("CreateDir(%q) = %v", id, err)
-		}
+		require.NoError(t, projects.CreateDir(dir, id))
 		writeResult(t, dir, id)
 	}
 	return New(dir, allureBin, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
@@ -109,21 +104,15 @@ func writeResult(t *testing.T, baseDir, projectID string) {
 	t.Helper()
 
 	path := filepath.Join(projects.ResultsDir(baseDir, projectID), "9f0a1c-result.json")
-	if err := os.WriteFile(path, []byte(`{"name":"a test"}`), 0o644); err != nil {
-		t.Fatalf("writing result file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(`{"name":"a test"}`), 0o644))
 }
 
 func writeLatest(t *testing.T, g *Generator, projectID, body string) {
 	t.Helper()
 
 	latest := projects.LatestReportDir(g.projectsDir, projectID)
-	if err := os.MkdirAll(latest, 0o755); err != nil {
-		t.Fatalf("creating latest dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(latest, "index.html"), []byte(body), 0o644); err != nil {
-		t.Fatalf("writing latest report: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(latest, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(latest, "index.html"), []byte(body), 0o644))
 }
 
 func readLatest(t *testing.T, g *Generator, projectID string) string {
@@ -131,21 +120,15 @@ func readLatest(t *testing.T, g *Generator, projectID string) string {
 
 	path := filepath.Join(projects.LatestReportDir(g.projectsDir, projectID), "index.html")
 	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading latest report: %v", err)
-	}
+	require.NoError(t, err)
 	return string(b)
 }
 
 func TestLockForReturnsSameMutexPerProject(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
-	if a, b := g.lockFor("demo"), g.lockFor("demo"); a != b {
-		t.Errorf("lockFor(%q) returned different mutexes on repeated calls", "demo")
-	}
-	if a, b := g.lockFor("one"), g.lockFor("two"); a == b {
-		t.Error("different projects share a mutex, they must not block each other")
-	}
+	assert.Same(t, g.lockFor("demo"), g.lockFor("demo"))
+	assert.NotSame(t, g.lockFor("one"), g.lockFor("two"), "different projects must not block each other")
 }
 
 func TestLockForIsConcurrencySafe(t *testing.T) {
@@ -162,27 +145,21 @@ func TestLockForIsConcurrencySafe(t *testing.T) {
 
 	first := <-done
 	for range goroutines - 1 {
-		if got := <-done; got != first {
-			t.Fatal("concurrent lockFor calls produced different mutexes for one project")
-		}
+		require.Same(t, first, <-done)
 	}
 }
 
 func TestGenerateRejectsBadProjectID(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
-	if err := g.Generate(t.Context(), "../escape"); err == nil {
-		t.Fatal("Generate accepted a project ID containing a path traversal")
-	}
+	require.Error(t, g.Generate(t.Context(), "../escape"))
 }
 
 func TestGenerateUnknownProject(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
 	err := g.Generate(t.Context(), "missing")
-	if !errors.Is(err, ErrProjectNotFound) {
-		t.Fatalf("Generate(missing) = %v, want ErrProjectNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrProjectNotFound)
 }
 
 func TestEmptyResultsDirIsRefused(t *testing.T) {
@@ -190,41 +167,30 @@ func TestEmptyResultsDirIsRefused(t *testing.T) {
 		t.Helper()
 
 		dir := t.TempDir()
-		if err := projects.CreateDir(dir, "demo"); err != nil {
-			t.Fatalf("CreateDir: %v", err)
-		}
+		require.NoError(t, projects.CreateDir(dir, "demo"))
 		return New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 	}
 
 	t.Run("Generate", func(t *testing.T) {
 		g := newEmptyProject(t)
 
-		if err := g.Generate(t.Context(), "demo"); !errors.Is(err, ErrNoResults) {
-			t.Fatalf("Generate = %v, want ErrNoResults", err)
-		}
+		require.ErrorIs(t, g.Generate(t.Context(), "demo"), ErrNoResults)
 	})
 
 	t.Run("Start", func(t *testing.T) {
 		g := newEmptyProject(t)
 
-		if err := g.Start(t.Context(), "demo"); !errors.Is(err, ErrNoResults) {
-			t.Fatalf("Start = %v, want ErrNoResults", err)
-		}
-		if st, ok := g.Status("demo"); ok {
-			t.Fatalf("Status = %+v, want no status recorded for a rejected build", st)
-		}
+		require.ErrorIs(t, g.Start(t.Context(), "demo"), ErrNoResults)
+		_, ok := g.Status("demo")
+		assert.False(t, ok, "want no status recorded for a rejected build")
 	})
 
 	t.Run("the previous report survives", func(t *testing.T) {
 		g := newEmptyProject(t)
 		writeLatest(t, g, "demo", "previous")
 
-		if err := g.Generate(t.Context(), "demo"); !errors.Is(err, ErrNoResults) {
-			t.Fatalf("Generate = %v, want ErrNoResults", err)
-		}
-		if got := readLatest(t, g, "demo"); got != "previous" {
-			t.Fatalf("latest report = %q, want the previous one left untouched", got)
-		}
+		require.ErrorIs(t, g.Generate(t.Context(), "demo"), ErrNoResults)
+		assert.Equal(t, "previous", readLatest(t, g, "demo"))
 	})
 }
 
@@ -239,7 +205,7 @@ func TestGenerateSerializesSameProject(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("Generate returned while the project lock was held: %v", err)
+		require.FailNow(t, "Generate returned while the project lock was held", "err = %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -247,11 +213,9 @@ func TestGenerateSerializesSameProject(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Generate after unlock = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Generate did not proceed after the project lock was released")
+		require.FailNow(t, "Generate did not proceed after the project lock was released")
 	}
 }
 
@@ -267,35 +231,25 @@ func TestGenerateDoesNotBlockOtherProjects(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Generate(idle) = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Generate(idle) blocked while an unrelated project was building")
+		require.FailNow(t, "Generate(idle) blocked while an unrelated project was building")
 	}
 }
 
 func TestGenerateFirstBuildCreatesLatest(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want %q", got, "fresh")
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestGenerateReplacesPreviousReport(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 	writeLatest(t, g, "demo", "stale")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want the newly built %q", got, "fresh")
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestGenerateFailedBuildKeepsPreviousReport(t *testing.T) {
@@ -303,17 +257,10 @@ func TestGenerateFailedBuildKeepsPreviousReport(t *testing.T) {
 	writeLatest(t, g, "demo", "stale")
 
 	err := g.Generate(t.Context(), "demo")
-	if err == nil {
-		t.Fatal("Generate = nil, want an error when the CLI exits non-zero")
-	}
 
-	if !strings.Contains(err.Error(), "boom: broken results") {
-		t.Errorf("Generate error = %v, want it to carry the CLI stderr", err)
-	}
-
-	if got := readLatest(t, g, "demo"); got != "stale" {
-		t.Errorf("latest report = %q, want the previous %q left untouched", got, "stale")
-	}
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "boom: broken results", "want the CLI stderr in the error")
+	assert.Equal(t, "stale", readLatest(t, g, "demo"))
 }
 
 func TestGenerateRejectsReportWithoutIndex(t *testing.T) {
@@ -322,45 +269,28 @@ func TestGenerateRejectsReportWithoutIndex(t *testing.T) {
 		writeLatest(t, g, "demo", "stale")
 		history := projects.HistoryFile(g.projectsDir, "demo")
 		const want = "run one\n"
-		if err := os.WriteFile(history, []byte(want), 0o644); err != nil {
-			t.Fatalf("seeding history: %v", err)
-		}
+		require.NoError(t, os.WriteFile(history, []byte(want), 0o644))
 
-		if err := g.Generate(t.Context(), "demo"); err == nil {
-			t.Fatal("Generate = nil, want an error for a report with no index.html")
-		}
+		require.Error(t, g.Generate(t.Context(), "demo"))
 
-		if got := readLatest(t, g, "demo"); got != "stale" {
-			t.Errorf("latest report = %q, want the previous %q left untouched", got, "stale")
-		}
-		if _, err := os.Stat(projects.NumberedReportDir(g.projectsDir, "demo", 1)); !os.IsNotExist(err) {
-			t.Errorf("reports/1 exists (err = %v), want the broken report left unarchived", err)
-		}
-		if got := string(readFile(t, history)); got != want {
-			t.Errorf("history = %q, want it untouched at %q", got, want)
-		}
+		assert.Equal(t, "stale", readLatest(t, g, "demo"))
+		_, err := os.Stat(projects.NumberedReportDir(g.projectsDir, "demo", 1))
+		assert.ErrorIs(t, err, os.ErrNotExist, "want the broken report left unarchived")
+		assert.Equal(t, want, string(readFile(t, history)))
 	})
 
 	t.Run("first build leaves the project unbuilt and its number free", func(t *testing.T) {
 		g := newTestGenerator(t, fakeCLI(t, cliNoIndex), "demo")
 
-		if err := g.Generate(t.Context(), "demo"); err == nil {
-			t.Fatal("Generate = nil, want an error for a report with no index.html")
-		}
-		if _, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo")); !os.IsNotExist(err) {
-			t.Errorf("reports/latest exists (err = %v), want nothing published", err)
-		}
-		if _, err := os.Stat(projects.HistoryFile(g.projectsDir, "demo")); !os.IsNotExist(err) {
-			t.Errorf("history exists (err = %v), want nothing published", err)
-		}
+		require.Error(t, g.Generate(t.Context(), "demo"))
+		_, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo"))
+		assert.ErrorIs(t, err, os.ErrNotExist, "reports/latest: want nothing published")
+		_, err = os.Stat(projects.HistoryFile(g.projectsDir, "demo"))
+		assert.ErrorIs(t, err, os.ErrNotExist, "history: want nothing published")
 
 		retry := New(g.projectsDir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL, testMaxBuilds, 0)
-		if err := retry.Generate(t.Context(), "demo"); err != nil {
-			t.Fatalf("Generate after the failed build = %v, want nil", err)
-		}
-		if _, err := os.Stat(projects.NumberedReportDir(g.projectsDir, "demo", 1)); err != nil {
-			t.Errorf("reports/1 missing after the first good build: %v", err)
-		}
+		require.NoError(t, retry.Generate(t.Context(), "demo"))
+		assert.DirExists(t, projects.NumberedReportDir(g.projectsDir, "demo", 1))
 	})
 }
 
@@ -368,22 +298,14 @@ func TestGenerateRemovesTempBuildDirs(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
 	tmp := projects.TmpRoot(g.projectsDir, "demo")
-	if err := os.MkdirAll(filepath.Join(tmp, "build-stale"), 0o755); err != nil {
-		t.Fatalf("seeding stale temp dir: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, "build-stale"), 0o755))
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	entries, err := os.ReadDir(tmp)
-	if err != nil {
-		t.Fatalf("reading temp root: %v", err)
-	}
+	require.NoError(t, err)
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "build-") {
-			t.Errorf("temp root still holds %q after a build, want every build dir gone", e.Name())
-		}
+		assert.False(t, strings.HasPrefix(e.Name(), "build-"), "temp root still holds %q after a build", e.Name())
 	}
 }
 
@@ -392,77 +314,52 @@ func TestRunAllureReportsMissingBinary(t *testing.T) {
 
 	err := g.runAllure(t.Context(), t.TempDir(), t.TempDir(),
 		filepath.Join(t.TempDir(), "allurerc.json"))
-	if !errors.Is(err, exec.ErrNotFound) {
-		t.Fatalf("runAllure = %v, want an error wrapping exec.ErrNotFound", err)
-	}
+	require.ErrorIs(t, err, exec.ErrNotFound)
 }
 
 func TestGenerateInvokesTheGenerateSubcommand(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "argv")
 	g := newTestGenerator(t, fakeCLI(t, cliRecordArgv(dump)), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	raw, err := os.ReadFile(dump)
-	if err != nil {
-		t.Fatalf("reading recorded argv: %v", err)
-	}
+	require.NoError(t, err)
 	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
 
-	if argv[0] != "generate" {
-		t.Errorf("argv = %q, want it to start with the generate subcommand - awesome discards the configured plugins", argv)
-	}
+	assert.Equal(t, "generate", argv[0], "awesome discards the configured plugins")
 }
 
 func TestGenerateStagesHistoryIntoTheConfig(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "config")
 	g := newTestGenerator(t, fakeCLI(t, cliDumpConfig(dump)), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	var got struct {
 		HistoryPath string `json:"historyPath"`
 	}
-	if err := json.Unmarshal(readFile(t, dump), &got); err != nil {
-		t.Fatalf("config is not valid JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(readFile(t, dump), &got))
 
-	if got.HistoryPath == "" {
-		t.Fatal("config carries no historyPath, so the CLI keeps no history at all")
-	}
-	if published := projects.HistoryFile(g.projectsDir, "demo"); got.HistoryPath == published {
-		t.Errorf("historyPath = %q, want a staged copy rather than the project's own history", got.HistoryPath)
-	}
-	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got.HistoryPath, tmp+string(filepath.Separator)) {
-		t.Errorf("historyPath = %q, want it staged under %q", got.HistoryPath, tmp)
-	}
+	require.NotEmpty(t, got.HistoryPath, "config carries no historyPath, so the CLI keeps no history at all")
+	assert.NotEqual(t, projects.HistoryFile(g.projectsDir, "demo"), got.HistoryPath, "want a staged copy rather than the project's own history")
+	tmp := projects.TmpRoot(g.projectsDir, "demo")
+	assert.True(t, strings.HasPrefix(got.HistoryPath, tmp+string(filepath.Separator)), "historyPath = %q, want it staged under %q", got.HistoryPath, tmp)
 }
 
 func TestRunAllureRunsTheCLIFromANeutralDirectory(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "cwd")
 	g := newTestGenerator(t, fakeCLI(t, cliRecordCwd(dump)), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	raw, err := os.ReadFile(dump)
-	if err != nil {
-		t.Fatalf("reading recorded cwd: %v", err)
-	}
+	require.NoError(t, err)
 	got := strings.TrimSpace(string(raw))
 
 	want, err := filepath.EvalSymlinks(os.TempDir())
-	if err != nil {
-		t.Fatalf("resolving the temp dir: %v", err)
-	}
-	if got != want {
-		t.Errorf("CLI ran in %q, want the neutral %q - anything else lets git metadata leak into the report", got, want)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "anything but a neutral directory lets git metadata leak into the report")
 }
 
 func TestRunAllureCapsTheBuildHeap(t *testing.T) {
@@ -472,14 +369,9 @@ func TestRunAllureCapsTheBuildHeap(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cli), "demo")
 	g.heapMB = 512
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
-	got := string(readFile(t, dump))
-	if want := "--max-old-space-size=9999 --max-old-space-size=512"; got != want {
-		t.Errorf("NODE_OPTIONS = %q, want %q - the cap has to come last to win", got, want)
-	}
+	assert.Equal(t, "--max-old-space-size=9999 --max-old-space-size=512", string(readFile(t, dump)), "the cap has to come last to win")
 }
 
 // The CLI prints its diagnostic last, so stderr capped in size has to keep its
@@ -488,107 +380,68 @@ func TestRunAllureKeepsTheTailOfAFloodedStderr(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliFloodStderr), "demo")
 
 	err := g.Generate(t.Context(), "demo")
-	if err == nil {
-		t.Fatal("Generate = nil, want the CLI failure")
-	}
+	require.Error(t, err)
 	got := err.Error()
 
-	if !strings.Contains(got, "TAIL-MARKER") {
-		t.Errorf("error = %q, want it to carry the end of stderr, where the CLI puts its diagnostic", got)
-	}
-	if strings.Contains(got, "HEAD-ONLY-MARKER") {
-		t.Error("error carries the start of stderr, so the flood was kept and the diagnostic dropped")
-	}
-
-	if len(got) > maxStderrBytes+512 {
-		t.Errorf("error is %d bytes, want stderr truncated to about %d", len(got), maxStderrBytes)
-	}
+	assert.Contains(t, got, "TAIL-MARKER", "want the end of stderr, where the CLI puts its diagnostic")
+	assert.NotContains(t, got, "HEAD-ONLY-MARKER", "the flood was kept and the diagnostic dropped")
+	assert.LessOrEqual(t, len(got), maxStderrBytes+512, "want stderr truncated to about %d bytes", maxStderrBytes)
 }
 
 func TestGenerateInvokesTheCLIWithConfigPath(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "argv")
 	g := newTestGenerator(t, fakeCLI(t, cliRecordArgv(dump)), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	raw, err := os.ReadFile(dump)
-	if err != nil {
-		t.Fatalf("reading recorded argv: %v", err)
-	}
+	require.NoError(t, err)
 	argv := strings.Split(strings.TrimSpace(string(raw)), "\n")
 
 	got, ok := flagValue(argv, "--config")
-	if !ok {
-		t.Fatalf("argv = %q, want it to carry --config", argv)
-	}
-	if filepath.Ext(got) != ".json" {
-		t.Errorf("--config = %q, want a .json file - the CLI ignores any other extension without saying so", got)
-	}
-	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(got, tmp+string(filepath.Separator)) {
-		t.Errorf("--config = %q, want it written under %q", got, tmp)
-	}
+	require.True(t, ok, "argv = %q, want it to carry --config", argv)
+	assert.Equal(t, ".json", filepath.Ext(got), "the CLI ignores any other extension without saying so")
+	tmp := projects.TmpRoot(g.projectsDir, "demo")
+	assert.True(t, strings.HasPrefix(got, tmp+string(filepath.Separator)), "--config = %q, want it written under %q", got, tmp)
 }
 
 func TestGenerateWritesTheLimitIntoTheConfig(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "config")
 	g := newTestGenerator(t, fakeCLI(t, cliDumpConfig(dump)), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	raw, err := os.ReadFile(dump)
-	if err != nil {
-		t.Fatalf("reading the config the CLI was given: %v", err)
-	}
+	require.NoError(t, err)
 
 	var got struct {
 		HistoryLimit *int `json:"historyLimit"`
 	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("config %q is not valid JSON: %v", raw, err)
-	}
-	if got.HistoryLimit == nil {
-		t.Fatalf("config = %s, want a historyLimit key spelled exactly that way", raw)
-	}
-	if *got.HistoryLimit != testHistoryLimit {
-		t.Errorf("historyLimit = %d, want the generator's %d", *got.HistoryLimit, testHistoryLimit)
-	}
+	require.NoError(t, json.Unmarshal(raw, &got))
+	require.NotNil(t, got.HistoryLimit, "config = %s, want a historyLimit key spelled exactly that way", raw)
+	assert.Equal(t, testHistoryLimit, *got.HistoryLimit)
 }
 
 func TestWriteAllureConfigKeepsAZeroLimit(t *testing.T) {
 	dir := t.TempDir()
 
 	path, err := writeAllureConfig(dir, 0, filepath.Join(dir, "history.jsonl"), 1, "demo", testBaseURL)
-	if err != nil {
-		t.Fatalf("writeAllureConfig = %v, want nil", err)
-	}
+	require.NoError(t, err)
 
 	raw := readFile(t, path)
 
 	var got map[string]any
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("config %s is not valid JSON: %v", raw, err)
-	}
+	require.NoError(t, json.Unmarshal(raw, &got))
 
-	limit, ok := got["historyLimit"]
-	if !ok {
-		t.Fatalf("config = %s, want a historyLimit key even when it is zero", raw)
-	}
-	if limit != float64(0) {
-		t.Errorf("historyLimit = %v, want 0", limit)
-	}
+	require.Contains(t, got, "historyLimit", "want the key even when it is zero")
+	assert.Equal(t, float64(0), got["historyLimit"])
 }
 
 func TestWriteAllureConfigWiresTheReportURLPlugin(t *testing.T) {
 	dir := t.TempDir()
 
 	path, err := writeAllureConfig(dir, testHistoryLimit, filepath.Join(dir, "history.jsonl"), 4, "demo", testBaseURL)
-	if err != nil {
-		t.Fatalf("writeAllureConfig = %v, want nil", err)
-	}
+	require.NoError(t, err)
 
 	raw := readFile(t, path)
 
@@ -607,31 +460,16 @@ func TestWriteAllureConfigWiresTheReportURLPlugin(t *testing.T) {
 			} `json:"reporturl"`
 		} `json:"plugins"`
 	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("config %s is not valid JSON: %v", raw, err)
-	}
+	require.NoError(t, json.Unmarshal(raw, &got))
 
 	plugin := got.Plugins.ReportURL
 
-	const wantURL = testBaseURL + "/projects/demo/reports/4/index.html"
-	if plugin.Options.URL != wantURL {
-		t.Errorf("plugin url = %q, want %q for build 4", plugin.Options.URL, wantURL)
-	}
-	if plugin.Import == "" {
-		t.Fatalf("config = %s, want the plugin's import path", raw)
-	}
+	assert.Equal(t, testBaseURL+"/projects/demo/reports/4/index.html", plugin.Options.URL)
+	require.NotEmpty(t, plugin.Import, "config = %s, want the plugin's import path", raw)
+	assert.Equal(t, ".mjs", filepath.Ext(plugin.Import), "Node reads .js next to no package.json as CommonJS")
+	assert.FileExists(t, plugin.Import)
 
-	if filepath.Ext(plugin.Import) != ".mjs" {
-		t.Errorf("plugin import = %q, want a .mjs file - Node reads .js next to no package.json as CommonJS", plugin.Import)
-	}
-	if _, err := os.Stat(plugin.Import); err != nil {
-		t.Errorf("plugin import %q does not exist: %v", plugin.Import, err)
-	}
-
-	want := []string{"parentSuite", "suite", "subSuite"}
-	if !slices.Equal(got.Plugins.Awesome.Options.GroupBy, want) {
-		t.Errorf("awesome groupBy = %q, want %q", got.Plugins.Awesome.Options.GroupBy, want)
-	}
+	assert.Equal(t, []string{"parentSuite", "suite", "subSuite"}, got.Plugins.Awesome.Options.GroupBy)
 }
 
 func TestReportURLPluginSetsTheReportURL(t *testing.T) {
@@ -643,9 +481,7 @@ func TestReportURLPluginSetsTheReportURL(t *testing.T) {
 	dir := t.TempDir()
 
 	pluginPath, err := writeReportURLPlugin(dir)
-	if err != nil {
-		t.Fatalf("writeReportURLPlugin = %v, want nil", err)
-	}
+	require.NoError(t, err)
 
 	harness := filepath.Join(dir, "harness.mjs")
 	body := "import Plugin from " + strconv.Quote(pluginPath) + ";\n" +
@@ -653,34 +489,22 @@ func TestReportURLPluginSetsTheReportURL(t *testing.T) {
 		"const context = {};\n" +
 		"await plugin.start(context);\n" +
 		"console.log(context.reportUrl);\n"
-	if err := os.WriteFile(harness, []byte(body), 0o644); err != nil {
-		t.Fatalf("writing harness: %v", err)
-	}
+	require.NoError(t, os.WriteFile(harness, []byte(body), 0o644))
 
 	out, err := exec.CommandContext(t.Context(), node, harness).CombinedOutput()
-	if err != nil {
-		t.Fatalf("running the plugin: %v\n%s", err, out)
-	}
-	if got := strings.TrimSpace(string(out)); got != "https://allure.example.test/projects/demo/reports/7/index.html" {
-		t.Errorf("context.reportUrl = %q, want the url the plugin was given", got)
-	}
+	require.NoError(t, err, "%s", out)
+	assert.Equal(t, "https://allure.example.test/projects/demo/reports/7/index.html", strings.TrimSpace(string(out)))
 }
 
 func TestReportURLForIsAbsolute(t *testing.T) {
 	got := reportURLFor(testBaseURL, "demo", 4)
 
-	want := testBaseURL + "/projects/demo/reports/4/index.html"
-	if got != want {
-		t.Errorf("reportURLFor = %q, want %q", got, want)
-	}
+	assert.Equal(t, testBaseURL+"/projects/demo/reports/4/index.html", got)
 
 	parsed, err := url.Parse(got)
-	if err != nil {
-		t.Fatalf("reportURLFor produced an unparseable url %q: %v", got, err)
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		t.Errorf("reportURLFor = %q, want a scheme and a host - new URL() rejects anything else", got)
-	}
+	require.NoError(t, err)
+	assert.NotEmpty(t, parsed.Scheme, "new URL() rejects a url without a scheme")
+	assert.NotEmpty(t, parsed.Host, "new URL() rejects a url without a host")
 }
 
 func TestReportURLForSurvivesNewURL(t *testing.T) {
@@ -693,26 +517,18 @@ func TestReportURLForSurvivesNewURL(t *testing.T) {
 	harness := filepath.Join(dir, "harness.mjs")
 	body := "new URL(" + strconv.Quote(reportURLFor(testBaseURL, "demo", 4)) + ");\n" +
 		"console.log(\"ok\");\n"
-	if err := os.WriteFile(harness, []byte(body), 0o644); err != nil {
-		t.Fatalf("writing harness: %v", err)
-	}
+	require.NoError(t, os.WriteFile(harness, []byte(body), 0o644))
 
 	out, err := exec.CommandContext(t.Context(), node, harness).CombinedOutput()
-	if err != nil {
-		t.Fatalf("new URL() rejected the report url, which is what kills the page:\n%s", out)
-	}
-	if got := strings.TrimSpace(string(out)); got != "ok" {
-		t.Errorf("harness said %q, want ok", got)
-	}
+	require.NoError(t, err, "new URL() rejected the report url, which is what kills the page:\n%s", out)
+	assert.Equal(t, "ok", strings.TrimSpace(string(out)))
 }
 
 func TestGenerateWritesThePluginBesideTheConfig(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "config")
 	g := newTestGenerator(t, fakeCLI(t, cliDumpConfig(dump)), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	var got struct {
 		Plugins struct {
@@ -721,29 +537,20 @@ func TestGenerateWritesThePluginBesideTheConfig(t *testing.T) {
 			} `json:"reporturl"`
 		} `json:"plugins"`
 	}
-	if err := json.Unmarshal(readFile(t, dump), &got); err != nil {
-		t.Fatalf("config is not valid JSON: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(readFile(t, dump), &got))
 
 	imported := got.Plugins.ReportURL.Import
-	if tmp := projects.TmpRoot(g.projectsDir, "demo"); !strings.HasPrefix(imported, tmp+string(filepath.Separator)) {
-		t.Errorf("plugin import = %q, want it written under %q", imported, tmp)
-	}
-	if _, err := os.Stat(imported); err != nil {
-		t.Errorf("plugin import %q does not exist while the CLI is running: %v", imported, err)
-	}
+	tmp := projects.TmpRoot(g.projectsDir, "demo")
+	assert.True(t, strings.HasPrefix(imported, tmp+string(filepath.Separator)), "plugin import = %q, want it written under %q", imported, tmp)
+	assert.FileExists(t, imported, "want the plugin in place while the CLI is running")
 }
 
 func TestGetNextBuildNumberWithNoReportsIsOne(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 
 	got, err := g.getNextBuildNumber("demo")
-	if err != nil {
-		t.Fatalf("getNextBuildNumber = %v", err)
-	}
-	if got != 1 {
-		t.Errorf("getNextBuildNumber = %d, want 1", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, got)
 }
 
 func TestGetNextBuildNumberIsMaxPlusOne(t *testing.T) {
@@ -752,18 +559,12 @@ func TestGetNextBuildNumberIsMaxPlusOne(t *testing.T) {
 	reports := projects.ReportsDir(g.projectsDir, "demo")
 
 	for _, name := range []string{"1", "2", "7", "9", "10", "latest"} {
-		if err := os.Mkdir(filepath.Join(reports, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.Mkdir(filepath.Join(reports, name), 0o755))
 	}
 
 	got, err := g.getNextBuildNumber("demo")
-	if err != nil {
-		t.Fatalf("getNextBuildNumber = %v", err)
-	}
-	if got != 11 {
-		t.Errorf("getNextBuildNumber = %d, want 11 (max numeric name 10, plus one; \"latest\" ignored)", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 11, got, "max numeric name 10, plus one; \"latest\" ignored")
 }
 
 func TestGetNextBuildNumberIgnoresNonDirEntries(t *testing.T) {
@@ -771,47 +572,32 @@ func TestGetNextBuildNumberIgnoresNonDirEntries(t *testing.T) {
 
 	reports := projects.ReportsDir(g.projectsDir, "demo")
 
-	if err := os.WriteFile(filepath.Join(reports, "5"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(reports, "5"), []byte("x"), 0o644))
 
 	got, err := g.getNextBuildNumber("demo")
-	if err != nil {
-		t.Fatalf("getNextBuildNumber = %v", err)
-	}
-	if got != 1 {
-		t.Errorf("getNextBuildNumber = %d, want 1 (the stray file must be ignored)", got)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, 1, got, "the stray file must be ignored")
 }
 
 func TestWriteExecutorSkipsFirstBuild(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := writeExecutor(dir, "demo", testBaseURL, 1); err != nil {
-		t.Fatalf("writeExecutor = %v, want nil", err)
-	}
+	require.NoError(t, writeExecutor(dir, "demo", testBaseURL, 1))
 
-	if _, err := os.Stat(filepath.Join(dir, projects.ExecutorFileName)); !os.IsNotExist(err) {
-		t.Errorf("executor.json exists for the first build, want it absent (err = %v)", err)
-	}
+	_, err := os.Stat(filepath.Join(dir, projects.ExecutorFileName))
+	assert.ErrorIs(t, err, os.ErrNotExist, "want no executor.json for the first build")
 }
 
 func TestWriteExecutorWritesExpectedFields(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := writeExecutor(dir, "demo", testBaseURL, 3); err != nil {
-		t.Fatalf("writeExecutor = %v, want nil", err)
-	}
+	require.NoError(t, writeExecutor(dir, "demo", testBaseURL, 3))
 
 	raw, err := os.ReadFile(filepath.Join(dir, projects.ExecutorFileName))
-	if err != nil {
-		t.Fatalf("reading executor.json: %v", err)
-	}
+	require.NoError(t, err)
 
 	var got executorFile
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshaling executor.json: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(raw, &got))
 
 	want := executorFile{
 		BuildOrder: 3,
@@ -819,202 +605,135 @@ func TestWriteExecutorWritesExpectedFields(t *testing.T) {
 		ReportName: "demo #3",
 		ReportURL:  testBaseURL + "/projects/demo/reports/3/index.html",
 	}
-	if got != want {
-		t.Errorf("executor.json = %+v, want %+v", got, want)
-	}
+	assert.Equal(t, want, got)
 
 	for _, key := range []string{`"name"`, `"type"`, `"url"`, `"buildUrl"`} {
-		if strings.Contains(string(raw), key) {
-			t.Errorf("executor.json = %s, want it without the %s key", raw, key)
-		}
+		assert.NotContains(t, string(raw), key)
 	}
 }
 
 func TestGenerateSkipsExecutorOnFirstBuild(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	executorPath := filepath.Join(projects.ResultsDir(g.projectsDir, "demo"), projects.ExecutorFileName)
-	if _, err := os.Stat(executorPath); !os.IsNotExist(err) {
-		t.Errorf("executor.json exists after the first build, want it absent (err = %v)", err)
-	}
+	_, err := os.Stat(executorPath)
+	assert.ErrorIs(t, err, os.ErrNotExist, "want no executor.json after the first build")
 }
 
 func TestGenerateWritesExecutorWhenAPreviousBuildIsArchived(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
 	reports := projects.ReportsDir(g.projectsDir, "demo")
-	if err := os.Mkdir(filepath.Join(reports, "3"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(reports, "3"), 0o755))
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	executorPath := filepath.Join(projects.ResultsDir(g.projectsDir, "demo"), projects.ExecutorFileName)
 	raw, err := os.ReadFile(executorPath)
-	if err != nil {
-		t.Fatalf("reading executor.json: %v", err)
-	}
+	require.NoError(t, err)
 
 	var got executorFile
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshaling executor.json: %v", err)
-	}
-	if got.BuildOrder != 4 {
-		t.Errorf("buildOrder = %d, want 4 (one past the archived build 3)", got.BuildOrder)
-	}
+	require.NoError(t, json.Unmarshal(raw, &got))
+	assert.Equal(t, 4, got.BuildOrder, "one past the archived build 3")
 }
 
 func TestGenerateArchivesFirstBuildAtNumberOne(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	archived := filepath.Join(projects.NumberedReportDir(g.projectsDir, "demo", 1), "index.html")
 	body, err := os.ReadFile(archived)
-	if err != nil {
-		t.Fatalf("reading archived report: %v", err)
-	}
-	if string(body) != "fresh" {
-		t.Errorf("archived report = %q, want %q", body, "fresh")
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "fresh", string(body))
 }
 
 func TestGenerateArchivesUnderTheNextBuildNumber(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
 	reports := projects.ReportsDir(g.projectsDir, "demo")
-	if err := os.Mkdir(filepath.Join(reports, "3"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Mkdir(filepath.Join(reports, "3"), 0o755))
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	archived := filepath.Join(projects.NumberedReportDir(g.projectsDir, "demo", 4), "index.html")
-	if _, err := os.Stat(archived); err != nil {
-		t.Errorf("archived report at build 4 missing: %v", err)
-	}
+	assert.FileExists(t, archived)
 }
 
 func TestGenerateArchiveFailureDoesNotFailTheBuild(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
 	reports := projects.ReportsDir(g.projectsDir, "demo")
-	if err := os.WriteFile(filepath.Join(reports, "1"), []byte("not a directory"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(reports, "1"), []byte("not a directory"), 0o644))
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil (archiving is best-effort)", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"), "archiving is best-effort")
 
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want %q; a failed archive must not affect publishing", got, "fresh")
-	}
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"), "a failed archive must not affect publishing")
 }
 
 func TestGenerateLeavesNoPartialArchiveBehind(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliUnarchivable), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil (archiving is best-effort)", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"), "archiving is best-effort")
 
 	archived := projects.NumberedReportDir(g.projectsDir, "demo", 1)
-	if _, err := os.Stat(archived); !errors.Is(err, os.ErrNotExist) {
-		entries, _ := os.ReadDir(archived)
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		t.Errorf("a partial archive was published at build 1: %v (stat err = %v)", names, err)
-	}
+	_, err := os.Stat(archived)
+	assert.ErrorIs(t, err, os.ErrNotExist, "a partial archive was published at build 1")
 
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want %q", got, "fresh")
-	}
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestGenerateSkipsTheArchiveWhenHistoryIsOff(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliUnarchivable), "demo")
 	g.historyLimit = 0
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
 	staged := filepath.Join(projects.TmpRoot(g.projectsDir, "demo"), "archive")
-	if _, err := os.Stat(staged); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("the report was staged for archiving at %s (stat err = %v), want no archiving with the limit at 0", staged, err)
-	}
+	_, err := os.Stat(staged)
+	assert.ErrorIs(t, err, os.ErrNotExist, "want no archiving with the limit at 0")
 
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want %q", got, "fresh")
-	}
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestPruneReportsKeepsAllWhenUnderTheLimit(t *testing.T) {
 	dir := t.TempDir()
-	if err := projects.CreateDir(dir, "demo"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, projects.CreateDir(dir, "demo"))
 	g := New(dir, "unused-cli", 3, testBaseURL, testMaxBuilds, 0)
 
 	reports := projects.ReportsDir(dir, "demo")
 	for _, name := range []string{"1", "2"} {
-		if err := os.Mkdir(filepath.Join(reports, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.Mkdir(filepath.Join(reports, name), 0o755))
 	}
 
-	if err := g.pruneReports("demo"); err != nil {
-		t.Fatalf("pruneReports = %v, want nil", err)
-	}
+	require.NoError(t, g.pruneReports("demo"))
 
 	for _, name := range []string{"1", "2"} {
-		if _, err := os.Stat(filepath.Join(reports, name)); err != nil {
-			t.Errorf("reports/%s missing after prune, want it kept (fewer builds than the limit): %v", name, err)
-		}
+		assert.DirExists(t, filepath.Join(reports, name), "fewer builds than the limit, want all kept")
 	}
 }
 
 func TestPruneReportsDeletesOldestByNumber(t *testing.T) {
 	dir := t.TempDir()
-	if err := projects.CreateDir(dir, "demo"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, projects.CreateDir(dir, "demo"))
 	g := New(dir, "unused-cli", 3, testBaseURL, testMaxBuilds, 0)
 
 	reports := projects.ReportsDir(dir, "demo")
 
 	for _, name := range []string{"1", "2", "3", "7", "9", "10", "latest"} {
-		if err := os.Mkdir(filepath.Join(reports, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.Mkdir(filepath.Join(reports, name), 0o755))
 	}
 
-	if err := g.pruneReports("demo"); err != nil {
-		t.Fatalf("pruneReports = %v, want nil", err)
-	}
+	require.NoError(t, g.pruneReports("demo"))
 
 	for _, name := range []string{"1", "2", "3"} {
-		if _, err := os.Stat(filepath.Join(reports, name)); !os.IsNotExist(err) {
-			t.Errorf("reports/%s still exists, want the three oldest builds pruned (err = %v)", name, err)
-		}
+		_, err := os.Stat(filepath.Join(reports, name))
+		assert.ErrorIs(t, err, os.ErrNotExist, "want the three oldest builds pruned")
 	}
 	for _, name := range []string{"7", "9", "10", "latest"} {
-		if _, err := os.Stat(filepath.Join(reports, name)); err != nil {
-			t.Errorf("reports/%s missing after prune, want the newest builds and latest kept: %v", name, err)
-		}
+		assert.DirExists(t, filepath.Join(reports, name), "want the newest builds and latest kept")
 	}
 }
 
@@ -1022,16 +741,12 @@ func TestPruneReportsReadDirErrorPropagates(t *testing.T) {
 	dir := t.TempDir()
 	g := New(dir, "unused-cli", 3, testBaseURL, testMaxBuilds, 0)
 
-	if err := g.pruneReports("missing"); err == nil {
-		t.Fatal("pruneReports = nil, want an error when the reports directory can't be read")
-	}
+	require.Error(t, g.pruneReports("missing"))
 }
 
 func TestGenerateContinuesWhenPruneReportsFails(t *testing.T) {
 	dir := t.TempDir()
-	if err := projects.CreateDir(dir, "demo"); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, projects.CreateDir(dir, "demo"))
 	writeResult(t, dir, "demo")
 	g := New(dir, "unused-cli", testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
@@ -1043,12 +758,8 @@ func TestGenerateContinuesWhenPruneReportsFails(t *testing.T) {
 
 	t.Cleanup(func() { _ = os.Chmod(reports, 0o755) })
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil (a failed prune must not fail the build)", err)
-	}
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want %q", got, "fresh")
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"), "a failed prune must not fail the build")
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestGenerateAccumulatesHistoryAcrossBuilds(t *testing.T) {
@@ -1056,19 +767,12 @@ func TestGenerateAccumulatesHistoryAcrossBuilds(t *testing.T) {
 
 	const builds = 3
 	for i := range builds {
-		if err := g.Generate(t.Context(), "demo"); err != nil {
-			t.Fatalf("Generate (build %d) = %v, want nil", i+1, err)
-		}
+		require.NoError(t, g.Generate(t.Context(), "demo"), "build %d", i+1)
 	}
 
 	b, err := os.ReadFile(projects.HistoryFile(g.projectsDir, "demo"))
-	if err != nil {
-		t.Fatalf("reading published history: %v", err)
-	}
-	if got := strings.Count(string(b), "\n"); got != builds {
-		t.Errorf("history holds %d runs after %d builds, want %d: %q",
-			got, builds, builds, b)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, builds, strings.Count(string(b), "\n"), "runs in history: %q", b)
 }
 
 func TestFailedBuildLeavesHistoryIntact(t *testing.T) {
@@ -1076,21 +780,13 @@ func TestFailedBuildLeavesHistoryIntact(t *testing.T) {
 
 	history := projects.HistoryFile(g.projectsDir, "demo")
 	const want = "run one\nrun two\n"
-	if err := os.WriteFile(history, []byte(want), 0o644); err != nil {
-		t.Fatalf("seeding history: %v", err)
-	}
+	require.NoError(t, os.WriteFile(history, []byte(want), 0o644))
 
-	if err := g.Generate(t.Context(), "demo"); err == nil {
-		t.Fatal("Generate = nil, want the failing CLI to be reported")
-	}
+	require.Error(t, g.Generate(t.Context(), "demo"))
 
 	got, err := os.ReadFile(history)
-	if err != nil {
-		t.Fatalf("reading history after a failed build: %v", err)
-	}
-	if string(got) != want {
-		t.Errorf("history after a failed build = %q, want it untouched at %q", got, want)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, want, string(got), "want history untouched by a failed build")
 }
 
 func flagValue(argv []string, name string) (string, bool) {
@@ -1109,18 +805,10 @@ func TestGenerateWithRealAllure(t *testing.T) {
 
 	g := newTestGenerator(t, "allure", "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 	index := filepath.Join(projects.LatestReportDir(g.projectsDir, "demo"), "index.html")
-	if _, err := os.Stat(index); err != nil {
-		t.Errorf("real Allure run left no index.html at %s: %v", index, err)
-	}
-
-	history := projects.HistoryFile(g.projectsDir, "demo")
-	if _, err := os.Stat(history); err != nil {
-		t.Errorf("real Allure run left no history at %s: %v", history, err)
-	}
+	assert.FileExists(t, index)
+	assert.FileExists(t, projects.HistoryFile(g.projectsDir, "demo"))
 }
 
 func TestGenerateContextDoneWhileWaitingForLock(t *testing.T) {
@@ -1140,11 +828,9 @@ func TestGenerateContextDoneWhileWaitingForLock(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Generate = %v, want an error wrapping context.Canceled", err)
-		}
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Generate did not return after its context was canceled")
+		require.FailNow(t, "Generate did not return after its context was canceled")
 	}
 }
 
@@ -1161,7 +847,7 @@ func waitForState(t *testing.T, g *Generator, projectID string, want State) Stat
 	}
 
 	st, ok := g.Status(projectID)
-	t.Fatalf("status of %q never reached %q (last: %+v, exists=%v)", projectID, want, st, ok)
+	require.FailNow(t, "status never reached the wanted state", "project %q, want %q, last: %+v, exists=%v", projectID, want, st, ok)
 	return Status{}
 }
 
@@ -1169,21 +855,14 @@ func TestStartReturnsBeforeTheBuildFinishes(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
 
 	began := time.Now()
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 
-	if waited := time.Since(began); waited > 200*time.Millisecond {
-		t.Errorf("Start blocked for %v, want it to return while the build runs", waited)
-	}
+	assert.LessOrEqual(t, time.Since(began), 200*time.Millisecond, "want Start to return while the build runs")
 
 	st, ok := g.Status("demo")
-	if !ok || st.State != StateRunning {
-		t.Fatalf("status right after Start = %+v (exists=%v), want %q", st, ok, StateRunning)
-	}
-	if st.StartedAt.IsZero() {
-		t.Error("running status has no StartedAt")
-	}
+	require.True(t, ok)
+	require.Equal(t, StateRunning, st.State)
+	assert.NotZero(t, st.StartedAt)
 
 	waitForState(t, g, "demo", StateSucceeded)
 }
@@ -1206,7 +885,7 @@ func waitUntilFinished(t *testing.T, g *Generator, projectID string) Status {
 	}
 
 	st, ok := g.Status(projectID)
-	t.Fatalf("build of %q never finished (last: %+v, exists=%v)", projectID, st, ok)
+	require.FailNow(t, "build never finished", "project %q, last: %+v, exists=%v", projectID, st, ok)
 	return Status{}
 }
 
@@ -1216,20 +895,15 @@ func TestStartQueuesWhenAllSlotsAreTaken(t *testing.T) {
 	g.slots = make(chan struct{}, 1)
 
 	for _, id := range []string{"a", "b"} {
-		if err := g.Start(t.Context(), id); err != nil {
-			t.Fatalf("Start(%s) = %v, want nil - a full generator queues, it does not refuse", id, err)
-		}
+		require.NoError(t, g.Start(t.Context(), id), "a full generator queues, it does not refuse")
 	}
 
-	if st, _ := g.Status("b"); st.State != StateRunning {
-		t.Errorf("status of the queued build = %q, want %q", st.State, StateRunning)
-	}
+	st, _ := g.Status("b")
+	assert.Equal(t, StateRunning, st.State, "status of the queued build")
 
 	for _, id := range []string{"a", "b"} {
-		if st := waitUntilFinished(t, g, id); st.State != StateSucceeded {
-			t.Errorf("build of %s = %q (%v), want %q - with one slot the builds must not overlap",
-				id, st.State, st.Err, StateSucceeded)
-		}
+		st := waitUntilFinished(t, g, id)
+		assert.Equal(t, StateSucceeded, st.State, "build of %s (%v): with one slot the builds must not overlap", id, st.Err)
 	}
 }
 
@@ -1243,18 +917,13 @@ func TestBuildWaitingForItsProjectHoldsNoSlot(t *testing.T) {
 	lock := g.lockFor("a")
 	lock.Lock()
 
-	if err := g.Start(t.Context(), "a"); err != nil {
-		t.Fatalf("Start(a) = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "a"))
 
 	time.Sleep(100 * time.Millisecond)
 
-	if err := g.Start(t.Context(), "b"); err != nil {
-		t.Fatalf("Start(b) = %v, want nil", err)
-	}
-	if st := waitUntilFinished(t, g, "b"); st.State != StateSucceeded {
-		t.Fatalf("build of b = %q (%v), want %q", st.State, st.Err, StateSucceeded)
-	}
+	require.NoError(t, g.Start(t.Context(), "b"))
+	st := waitUntilFinished(t, g, "b")
+	require.Equal(t, StateSucceeded, st.State, "build of b: %v", st.Err)
 
 	lock.Unlock()
 	waitForState(t, g, "a", StateSucceeded)
@@ -1276,80 +945,54 @@ func TestGenerateWaitsForASlotUntilItsContextEnds(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Generate with no free slot = %v, want context.DeadlineExceeded", err)
-		}
+		require.ErrorIs(t, err, context.DeadlineExceeded)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Generate kept waiting for a slot after its context ended")
+		require.FailNow(t, "Generate kept waiting for a slot after its context ended")
 	}
-	if _, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a build that never got a slot published a report (stat err = %v)", err)
-	}
+	_, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "a build that never got a slot published a report")
 }
 
 func TestNewTreatsNoSlotsAsOne(t *testing.T) {
 	g := New(t.TempDir(), "unused-cli", testHistoryLimit, testBaseURL, 0, 0)
 
-	if got := cap(g.slots); got != 1 {
-		t.Errorf("slots = %d, want 1 - with none, every build would wait forever", got)
-	}
+	assert.Equal(t, 1, cap(g.slots), "with no slots, every build would wait forever")
 }
 
 func TestStartRecordsSuccessAndPublishesReport(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 
 	st := waitForState(t, g, "demo", StateSucceeded)
-	if st.Err != nil {
-		t.Errorf("succeeded status carries an error: %v", st.Err)
-	}
-	if st.FinishedAt.Before(st.StartedAt) || st.FinishedAt.IsZero() {
-		t.Errorf("timestamps make no sense: started %v, finished %v", st.StartedAt, st.FinishedAt)
-	}
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want the newly built %q", got, "fresh")
-	}
+	assert.NoError(t, st.Err)
+	assert.NotZero(t, st.FinishedAt)
+	assert.False(t, st.FinishedAt.Before(st.StartedAt), "finished %v before it started %v", st.FinishedAt, st.StartedAt)
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestStartRecordsFailure(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliFail), "demo")
 	writeLatest(t, g, "demo", "stale")
 
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil: a build that will fail still starts fine", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 
 	st := waitForState(t, g, "demo", StateFailed)
-	if st.Err == nil {
-		t.Fatal("failed status carries no error, the caller has no way to learn why")
-	}
-	if !strings.Contains(st.Err.Error(), "boom: broken results") {
-		t.Errorf("status error = %v, want it to carry the CLI stderr", st.Err)
-	}
-	if got := readLatest(t, g, "demo"); got != "stale" {
-		t.Errorf("latest report = %q, want the previous %q left untouched", got, "stale")
-	}
+	require.Error(t, st.Err, "without an error the caller has no way to learn why the build failed")
+	assert.ErrorContains(t, st.Err, "boom: broken results", "want the CLI stderr in the error")
+	assert.Equal(t, "stale", readLatest(t, g, "demo"))
 }
 
 func TestStartRejectsASecondBuildOfTheSameProject(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
 
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("first Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 
 	err := g.Start(t.Context(), "demo")
-	if !errors.Is(err, ErrAlreadyRunning) {
-		t.Fatalf("second Start = %v, want ErrAlreadyRunning", err)
-	}
+	require.ErrorIs(t, err, ErrAlreadyRunning)
 
 	waitForState(t, g, "demo", StateSucceeded)
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start after the previous build finished = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 	waitForState(t, g, "demo", StateSucceeded)
 }
 
@@ -1383,19 +1026,14 @@ func TestTryStartClaimsExactlyOnceUnderConcurrency(t *testing.T) {
 		done.Wait()
 		close(won)
 
-		if n := len(won); n != 1 {
-			t.Fatalf("round %d: %d of %d callers claimed the project, want exactly 1",
-				round, n, callers)
-		}
+		require.Len(t, won, 1, "round %d: want exactly one of %d callers to claim the project", round, callers)
 	}
 }
 
 func TestStatusStaysReadableWhileABuildRuns(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
 
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 
 	answered := make(chan struct{})
 	go func() {
@@ -1406,7 +1044,7 @@ func TestStatusStaysReadableWhileABuildRuns(t *testing.T) {
 	select {
 	case <-answered:
 	case <-time.After(200 * time.Millisecond):
-		t.Fatal("Status blocked while a build was running: the build is holding g.mu")
+		require.FailNow(t, "Status blocked while a build was running: the build is holding g.mu")
 	}
 
 	waitForState(t, g, "demo", StateSucceeded)
@@ -1416,67 +1054,46 @@ func TestStartIgnoresTheCallersCancellation(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliSlow), "demo")
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if err := g.Start(ctx, "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(ctx, "demo"))
 
 	cancel()
 
 	st := waitForState(t, g, "demo", StateSucceeded)
-	if st.Err != nil {
-		t.Errorf("build reported %v after the caller went away, want it to finish", st.Err)
-	}
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want the build to have published %q", got, "fresh")
-	}
+	assert.NoError(t, st.Err, "want the build to finish after the caller went away")
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestStartRejectsUnknownAndMalformedProjects(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Start(t.Context(), "missing"); !errors.Is(err, ErrProjectNotFound) {
-		t.Errorf("Start(missing) = %v, want ErrProjectNotFound", err)
-	}
-	if err := g.Start(t.Context(), "../escape"); err == nil {
-		t.Error("Start accepted a project ID containing a path traversal")
-	}
+	assert.ErrorIs(t, g.Start(t.Context(), "missing"), ErrProjectNotFound)
+	assert.Error(t, g.Start(t.Context(), "../escape"))
 
-	if st, ok := g.Status("missing"); ok {
-		t.Errorf("rejected Start left a status behind: %+v", st)
-	}
+	_, ok := g.Status("missing")
+	assert.False(t, ok, "rejected Start left a status behind")
 }
 
 func TestClearResultsRejectsBadProjectID(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
-	if err := g.ClearResults("../escape"); err == nil {
-		t.Fatal("ClearResults accepted a project ID containing a path traversal")
-	}
+	require.Error(t, g.ClearResults("../escape"))
 }
 
 func TestClearResultsUnknownProject(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
 	err := g.ClearResults("missing")
-	if !errors.Is(err, ErrProjectNotFound) {
-		t.Fatalf("ClearResults(missing) = %v, want ErrProjectNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrProjectNotFound)
 }
 
 func TestClearResultsClearsFiles(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 
-	if err := g.ClearResults("demo"); err != nil {
-		t.Fatalf("ClearResults = %v, want nil", err)
-	}
+	require.NoError(t, g.ClearResults("demo"))
 
 	entries, err := os.ReadDir(projects.ResultsDir(g.projectsDir, "demo"))
-	if err != nil {
-		t.Fatalf("ReadDir after ClearResults: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Fatalf("results dir after ClearResults = %v, want empty", entries)
-	}
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
 
 func TestClearResultsSerializesWithABuildInFlight(t *testing.T) {
@@ -1490,7 +1107,7 @@ func TestClearResultsSerializesWithABuildInFlight(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("ClearResults returned while the project lock was held: %v", err)
+		require.FailNow(t, "ClearResults returned while the project lock was held", "err = %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -1498,80 +1115,54 @@ func TestClearResultsSerializesWithABuildInFlight(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("ClearResults after unlock = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("ClearResults did not proceed after the project lock was released")
+		require.FailNow(t, "ClearResults did not proceed after the project lock was released")
 	}
 }
 
 func TestClearHistoryRejectsBadProjectID(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
-	if err := g.ClearHistory(t.Context(), "../escape"); err == nil {
-		t.Fatal("ClearHistory accepted a project ID containing a path traversal")
-	}
+	require.Error(t, g.ClearHistory(t.Context(), "../escape"))
 }
 
 func TestClearHistoryUnknownProject(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
 	err := g.ClearHistory(t.Context(), "missing")
-	if !errors.Is(err, ErrProjectNotFound) {
-		t.Fatalf("ClearHistory(missing) = %v, want ErrProjectNotFound", err)
-	}
+	require.ErrorIs(t, err, ErrProjectNotFound)
 }
 
 func TestClearHistoryClearsAndTriggersRebuild(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
 	archive := projects.NumberedReportDir(g.projectsDir, "demo", 1)
-	if err := os.MkdirAll(archive, 0755); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(archive, "index.html"), []byte("old"), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if err := os.WriteFile(projects.HistoryFile(g.projectsDir, "demo"), []byte(`{"n":1}`), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	require.NoError(t, os.MkdirAll(archive, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(archive, "index.html"), []byte("old"), 0644))
+	require.NoError(t, os.WriteFile(projects.HistoryFile(g.projectsDir, "demo"), []byte(`{"n":1}`), 0644))
 	executor := filepath.Join(projects.ResultsDir(g.projectsDir, "demo"), projects.ExecutorFileName)
-	if err := os.WriteFile(executor, []byte(`{"buildOrder":5}`), 0644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	require.NoError(t, os.WriteFile(executor, []byte(`{"buildOrder":5}`), 0644))
 
-	if err := g.ClearHistory(t.Context(), "demo"); err != nil {
-		t.Fatalf("ClearHistory = %v, want nil", err)
-	}
+	require.NoError(t, g.ClearHistory(t.Context(), "demo"))
 
-	if _, err := os.Stat(archive); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("archive still exists (stat err = %v)", err)
-	}
-	if _, err := os.Stat(executor); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("executor.json still exists (stat err = %v)", err)
-	}
+	_, err := os.Stat(archive)
+	assert.ErrorIs(t, err, os.ErrNotExist, "archive still exists")
+	_, err = os.Stat(executor)
+	assert.ErrorIs(t, err, os.ErrNotExist, "executor.json still exists")
 
 	st := waitForState(t, g, "demo", StateSucceeded)
-	if st.Err != nil {
-		t.Errorf("triggered rebuild failed: %v", st.Err)
-	}
-	if got := readLatest(t, g, "demo"); got != "fresh" {
-		t.Errorf("latest report = %q, want the rebuild's own %q", got, "fresh")
-	}
+	assert.NoError(t, st.Err, "triggered rebuild failed")
+	assert.Equal(t, "fresh", readLatest(t, g, "demo"))
 }
 
 func TestClearHistoryRefusesWhenResultsAreEmpty(t *testing.T) {
 	dir := t.TempDir()
-	if err := projects.CreateDir(dir, "demo"); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
+	require.NoError(t, projects.CreateDir(dir, "demo"))
 	g := New(dir, fakeCLI(t, cliOK), testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	err := g.ClearHistory(t.Context(), "demo")
-	if !errors.Is(err, ErrNoResults) {
-		t.Fatalf("ClearHistory with empty results = %v, want ErrNoResults", err)
-	}
+	require.ErrorIs(t, err, ErrNoResults)
 }
 
 func TestClearHistorySerializesWithABuildInFlight(t *testing.T) {
@@ -1585,7 +1176,7 @@ func TestClearHistorySerializesWithABuildInFlight(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("ClearHistory returned while the project lock was held: %v", err)
+		require.FailNow(t, "ClearHistory returned while the project lock was held", "err = %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -1593,11 +1184,9 @@ func TestClearHistorySerializesWithABuildInFlight(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("ClearHistory after unlock = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("ClearHistory did not proceed after the project lock was released")
+		require.FailNow(t, "ClearHistory did not proceed after the project lock was released")
 	}
 
 	waitForState(t, g, "demo", StateSucceeded)
@@ -1606,54 +1195,38 @@ func TestClearHistorySerializesWithABuildInFlight(t *testing.T) {
 func TestDeleteRejectsBadProjectID(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
-	if err := g.Delete("../escape"); err == nil {
-		t.Fatal("Delete(\"../escape\") = nil, want a validation error")
-	}
+	require.Error(t, g.Delete("../escape"))
 }
 
 func TestDeleteUnknownProjectSucceeds(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli")
 
-	if err := g.Delete("nosuch"); err != nil {
-		t.Fatalf("Delete of an absent project = %v, want nil", err)
-	}
+	require.NoError(t, g.Delete("nosuch"))
 }
 
 func TestDeleteRemovesTheWholeProjectTree(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Generate(t.Context(), "demo"); err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), "demo"))
 
-	if _, err := os.Stat(projects.LatestReportDir(g.projectsDir, "demo")); err != nil {
-		t.Fatalf("setup: no report to delete: %v", err)
-	}
+	require.DirExists(t, projects.LatestReportDir(g.projectsDir, "demo"), "setup: no report to delete")
 
-	if err := g.Delete("demo"); err != nil {
-		t.Fatalf("Delete = %v, want nil", err)
-	}
+	require.NoError(t, g.Delete("demo"))
 
-	if _, err := os.Stat(projects.ProjectDir(g.projectsDir, "demo")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("project dir still there after Delete (stat err = %v)", err)
-	}
+	_, err := os.Stat(projects.ProjectDir(g.projectsDir, "demo"))
+	assert.ErrorIs(t, err, os.ErrNotExist, "project dir still there after Delete")
 }
 
 func TestDeleteForgetsTheProjectStatus(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 	waitForState(t, g, "demo", StateSucceeded)
 
-	if err := g.Delete("demo"); err != nil {
-		t.Fatalf("Delete = %v, want nil", err)
-	}
+	require.NoError(t, g.Delete("demo"))
 
-	if st, ok := g.Status("demo"); ok {
-		t.Errorf("Status after Delete = %+v, exists=%v, want no status at all", st, ok)
-	}
+	_, ok := g.Status("demo")
+	assert.False(t, ok, "want no status at all after Delete")
 }
 
 // A build goroutine writing its status after the project was deleted must not
@@ -1661,34 +1234,25 @@ func TestDeleteForgetsTheProjectStatus(t *testing.T) {
 func TestDeleteOutlastsALateStatusWrite(t *testing.T) {
 	g := newTestGenerator(t, fakeCLI(t, cliOK), "demo")
 
-	if err := g.Start(t.Context(), "demo"); err != nil {
-		t.Fatalf("Start = %v, want nil", err)
-	}
+	require.NoError(t, g.Start(t.Context(), "demo"))
 	waitForState(t, g, "demo", StateSucceeded)
 
-	if err := g.Delete("demo"); err != nil {
-		t.Fatalf("Delete = %v, want nil", err)
-	}
+	require.NoError(t, g.Delete("demo"))
 
 	g.setStatus("demo", Status{State: StateSucceeded, StartedAt: time.Now()})
 
-	if st, ok := g.Status("demo"); ok {
-		t.Errorf("Status after a late write = %+v, exists=%v, want no status at all", st, ok)
-	}
+	_, ok := g.Status("demo")
+	assert.False(t, ok, "want no status at all after a late write")
 }
 
 func TestDeleteKeepsTheProjectLock(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 
 	before := g.lockFor("demo")
-	if err := g.Delete("demo"); err != nil {
-		t.Fatalf("Delete = %v, want nil", err)
-	}
+	require.NoError(t, g.Delete("demo"))
 	after := g.lockFor("demo")
 
-	if before != after {
-		t.Error("Delete replaced the project's mutex; two callers can now hold different locks for one project")
-	}
+	assert.Same(t, before, after, "two callers could hold different locks for one project")
 }
 
 func TestDeleteSerializesWithABuildInFlight(t *testing.T) {
@@ -1702,7 +1266,7 @@ func TestDeleteSerializesWithABuildInFlight(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("Delete returned while the project lock was held: %v", err)
+		require.FailNow(t, "Delete returned while the project lock was held", "err = %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -1710,10 +1274,8 @@ func TestDeleteSerializesWithABuildInFlight(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("Delete after unlock = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Delete did not proceed after the project lock was released")
+		require.FailNow(t, "Delete did not proceed after the project lock was released")
 	}
 }
