@@ -3,6 +3,7 @@ package config
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -15,6 +16,8 @@ var allKeys = []string{
 	"CHECK_RESULTS_EVERY_SECONDS", "OPTIMIZE_STORAGE", "TLS", "DEV_MODE",
 	"STATIC_CONTENT_PROJECTS", "ALLURE_BIN", "PUBLIC_BASE_URL",
 	"MAX_CONCURRENT_BUILDS", "BUILD_HEAP_MB",
+	"SECURITY_USER", "SECURITY_PASS", "SECURITY_VIEWER_USER", "SECURITY_VIEWER_PASS",
+	"MAKE_VIEWER_ENDPOINTS_PUBLIC", "JWT_SECRET_KEY", "ACCESS_TOKEN_TTL", "REFRESH_TOKEN_TTL",
 }
 
 // clearEnv unsets every variable Load reads for the rest of the test.
@@ -33,19 +36,27 @@ func TestLoadDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, Config{
-		Port:                     "5050",
-		SecurityEnable:           false,
-		KeepHistory:              true,
-		KeepHistoryLatest:        60,
-		CheckResultsEverySeconds: 0,
-		OptimizeStorage:          false,
-		TLS:                      false,
-		DevMode:                  false,
-		ProjectsDir:              "/app/projects",
-		AllureBin:                "allure",
-		PublicBaseURL:            "",
-		MaxConcurrentBuilds:      4,
-		BuildHeapMB:              2048,
+		Port:                      "5050",
+		SecurityEnable:            false,
+		KeepHistory:               true,
+		KeepHistoryLatest:         60,
+		CheckResultsEverySeconds:  0,
+		OptimizeStorage:           false,
+		TLS:                       false,
+		DevMode:                   false,
+		ProjectsDir:               "/app/projects",
+		AllureBin:                 "allure",
+		PublicBaseURL:             "",
+		MaxConcurrentBuilds:       4,
+		BuildHeapMB:               2048,
+		SecurityUser:              "",
+		SecurityPass:              "",
+		SecurityViewerUser:        "",
+		SecurityViewerPass:        "",
+		MakeViewerEndpointsPublic: false,
+		JWTSecretKey:              "",
+		AccessTokenTTL:            15 * time.Minute,
+		RefreshTokenTTL:           720 * time.Hour,
 	}, got)
 }
 
@@ -63,24 +74,40 @@ func TestLoadFromEnv(t *testing.T) {
 	t.Setenv("PUBLIC_BASE_URL", "https://allure.example.com")
 	t.Setenv("MAX_CONCURRENT_BUILDS", "2")
 	t.Setenv("BUILD_HEAP_MB", "3072")
+	t.Setenv("SECURITY_USER", "admin")
+	t.Setenv("SECURITY_PASS", "admin-pass")
+	t.Setenv("SECURITY_VIEWER_USER", "viewer")
+	t.Setenv("SECURITY_VIEWER_PASS", "viewer-pass")
+	t.Setenv("MAKE_VIEWER_ENDPOINTS_PUBLIC", "true")
+	t.Setenv("JWT_SECRET_KEY", "0123456789abcdef0123456789abcdef")
+	t.Setenv("ACCESS_TOKEN_TTL", "5m")
+	t.Setenv("REFRESH_TOKEN_TTL", "24h")
 
 	got, err := Load()
 	require.NoError(t, err)
 
 	assert.Equal(t, Config{
-		Port:                     "8080",
-		SecurityEnable:           true,
-		KeepHistory:              false,
-		KeepHistoryLatest:        5,
-		CheckResultsEverySeconds: 30,
-		OptimizeStorage:          true,
-		TLS:                      true,
-		DevMode:                  true,
-		ProjectsDir:              "/data/projects",
-		AllureBin:                "/opt/allure/bin/allure",
-		PublicBaseURL:            "https://allure.example.com",
-		MaxConcurrentBuilds:      2,
-		BuildHeapMB:              3072,
+		Port:                      "8080",
+		SecurityEnable:            true,
+		KeepHistory:               false,
+		KeepHistoryLatest:         5,
+		CheckResultsEverySeconds:  30,
+		OptimizeStorage:           true,
+		TLS:                       true,
+		DevMode:                   true,
+		ProjectsDir:               "/data/projects",
+		AllureBin:                 "/opt/allure/bin/allure",
+		PublicBaseURL:             "https://allure.example.com",
+		MaxConcurrentBuilds:       2,
+		BuildHeapMB:               3072,
+		SecurityUser:              "admin",
+		SecurityPass:              "admin-pass",
+		SecurityViewerUser:        "viewer",
+		SecurityViewerPass:        "viewer-pass",
+		MakeViewerEndpointsPublic: true,
+		JWTSecretKey:              "0123456789abcdef0123456789abcdef",
+		AccessTokenTTL:            5 * time.Minute,
+		RefreshTokenTTL:           24 * time.Hour,
 	}, got)
 }
 
@@ -103,6 +130,9 @@ func TestLoadRejectsBadValues(t *testing.T) {
 		{"BUILD_HEAP_MB", "1"},
 		{"BUILD_HEAP_MB", "255"},
 		{"BUILD_HEAP_MB", "-1"},
+		{"MAKE_VIEWER_ENDPOINTS_PUBLIC", "maybe"},
+		{"ACCESS_TOKEN_TTL", "15"},
+		{"REFRESH_TOKEN_TTL", "a month"},
 	}
 
 	for _, tt := range tests {

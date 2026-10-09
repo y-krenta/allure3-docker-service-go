@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -16,9 +17,31 @@ import (
 type Config struct {
 	// Port is the port the HTTP server listens on.
 	Port string `env:"PORT" envDefault:"5050"`
+
 	// SecurityEnable turns on JWT auth; not implemented yet, so main refuses
 	// to start with it set.
 	SecurityEnable bool `env:"SECURITY_ENABLED"`
+	// SecurityUser is the admin's login name; required with SecurityEnable.
+	SecurityUser string `env:"SECURITY_USER"`
+	// SecurityPass is the admin's password.
+	SecurityPass string `env:"SECURITY_PASS"`
+	// SecurityViewerUser is the read-only viewer's login name; empty means
+	// there is no viewer.
+	SecurityViewerUser string `env:"SECURITY_VIEWER_USER"`
+	// SecurityViewerPass is the viewer's password.
+	SecurityViewerPass string `env:"SECURITY_VIEWER_PASS"`
+	// MakeViewerEndpointsPublic opens the read-only endpoints to anyone,
+	// without logging in.
+	MakeViewerEndpointsPublic bool `env:"MAKE_VIEWER_ENDPOINTS_PUBLIC"`
+	// JWTSecretKey signs and verifies the tokens. A restart with another key
+	// invalidates every token issued, logging everyone out.
+	JWTSecretKey string `env:"JWT_SECRET_KEY"`
+	// AccessTokenTTL is how long an access token lives.
+	AccessTokenTTL time.Duration `env:"ACCESS_TOKEN_TTL" envDefault:"15m"`
+	// RefreshTokenTTL is how long a refresh token lives, and so how long a
+	// login lasts without entering the password again.
+	RefreshTokenTTL time.Duration `env:"REFRESH_TOKEN_TTL" envDefault:"720h"`
+
 	// KeepHistory carries Allure history from one build into the next.
 	KeepHistory bool `env:"KEEP_HISTORY" envDefault:"true"`
 	// KeepHistoryLatest is how many past runs the history keeps; 0 or more.
