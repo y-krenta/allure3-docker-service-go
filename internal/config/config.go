@@ -1,125 +1,150 @@
 package config
 
 import (
-	"cmp"
-	"log"
+	"errors"
+	"fmt"
 	"os"
-	"strconv"
+	"reflect"
 	"time"
+
+	"github.com/caarlos0/env/v11"
 )
 
-// Config holds runtime configuration loaded from environment variables.
-// Use Load to obtain a populated instance; the zero value is not meaningful.
+// Config holds runtime configuration loaded from environment variables. Each
+// field's env tag names its variable and envDefault gives the value used when
+// the variable is unset or empty. Use Load to obtain a populated instance; the
+// zero value is not meaningful.
 type Config struct {
-	Port                 string        // listen port
-	SecurityEnable       bool          // Enable JWT auth; refused at startup, not implemented
-	KeepHistory          bool          // Preserve Allure history across runs
-	KeepHistoryLatest    int           // How many history entries to retain
-	CheckResultsInterval time.Duration // Auto-generate interval
-	OptimizeStorage      bool          // Strip large attachments; parsed, not implemented yet
-	TLS                  bool          // Enable HTTPS; refused at startup, not implemented
-	DevMode              bool          // Debug reloader; parsed, not implemented yet
-	ProjectsDir          string        // Default path projects
-	AllureBin            string        // Allure CLI executable; a bare name is looked up in PATH
-	PublicBaseURL        string        // Public address of this service; required, validated in main
-	MaxConcurrentBuilds  int           // Builds running at once across all projects; 0 means 1, negative falls back to the default
-	BuildHeapMB          int           // V8 old-space cap of one build in MiB; 0 leaves it to Node, 1-255 falls back to the default
+	// Port is the port the HTTP server listens on.
+	Port string `env:"PORT" envDefault:"5050"`
+
+	// SecurityEnable turns on JWT auth; not implemented yet, so main refuses
+	// to start with it set.
+	SecurityEnable bool `env:"SECURITY_ENABLED"`
+	// SecurityUser is the admin's login name; required with SecurityEnable.
+	SecurityUser string `env:"SECURITY_USER"`
+	// SecurityPass is the admin's password.
+	SecurityPass string `env:"SECURITY_PASS"`
+	// SecurityViewerUser is the read-only viewer's login name; empty means
+	// there is no viewer.
+	SecurityViewerUser string `env:"SECURITY_VIEWER_USER"`
+	// SecurityViewerPass is the viewer's password.
+	SecurityViewerPass string `env:"SECURITY_VIEWER_PASS"`
+	// MakeViewerEndpointsPublic opens the read-only endpoints to anyone,
+	// without logging in.
+	MakeViewerEndpointsPublic bool `env:"MAKE_VIEWER_ENDPOINTS_PUBLIC"`
+	// JWTSecretKey signs and verifies the tokens. A restart with another key
+	// invalidates every token issued, logging everyone out.
+	JWTSecretKey string `env:"JWT_SECRET_KEY"`
+	// AccessTokenTTL is how long an access token lives.
+	AccessTokenTTL time.Duration `env:"ACCESS_TOKEN_TTL" envDefault:"15m"`
+	// RefreshTokenTTL is how long a refresh token lives, and so how long a
+	// login lasts without entering the password again.
+	RefreshTokenTTL time.Duration `env:"REFRESH_TOKEN_TTL" envDefault:"720h"`
+
+	// KeepHistory carries Allure history from one build into the next.
+	KeepHistory bool `env:"KEEP_HISTORY" envDefault:"true"`
+	// KeepHistoryLatest is how many past runs the history keeps; 0 or more.
+	KeepHistoryLatest int `env:"KEEP_HISTORY_LATEST" envDefault:"60"`
+	// CheckResultsEverySeconds is how often the watcher looks for new results,
+	// in whole seconds; 0 turns the watcher off. Seconds rather than a
+	// time.Duration because the variable's format is part of the contract
+	// with operators.
+	CheckResultsEverySeconds int `env:"CHECK_RESULTS_EVERY_SECONDS" envDefault:"0"`
+	// OptimizeStorage strips large attachments; parsed, not implemented yet.
+	OptimizeStorage bool `env:"OPTIMIZE_STORAGE"`
+	// TLS serves HTTPS; not implemented, so main refuses to start with it set.
+	// TLS belongs on the reverse proxy.
+	TLS bool `env:"TLS"`
+	// DevMode enables a debug reloader; parsed, not implemented yet.
+	DevMode bool `env:"DEV_MODE"`
+	// ProjectsDir is the root holding every project's directory.
+	ProjectsDir string `env:"STATIC_CONTENT_PROJECTS" envDefault:"/app/projects"`
+	// AllureBin is the Allure CLI executable; a bare name is looked up in PATH.
+	AllureBin string `env:"ALLURE_BIN" envDefault:"allure"`
+	// PublicBaseURL is the address clients reach this service at. It has no
+	// default; main requires it and checks it is absolute.
+	PublicBaseURL string `env:"PUBLIC_BASE_URL"`
+	// MaxConcurrentBuilds is how many builds run at once across all
+	// projects; 1 or more.
+	MaxConcurrentBuilds int `env:"MAX_CONCURRENT_BUILDS" envDefault:"4"`
+	// BuildHeapMB caps the V8 old space of one build, in MiB. 0 leaves it to
+	// Node; otherwise at least minBuildHeapMB. The 2048 default is enough for
+	// about 10 000 tests with 60 runs of history.
+	BuildHeapMB int `env:"BUILD_HEAP_MB" envDefault:"2048"`
 }
 
 const (
-	// defaultBuildHeapMB is enough for ~10 000 tests with 60 runs of history.
-	defaultBuildHeapMB = 2048
 	// minBuildHeapMB is the smallest BUILD_HEAP_MB taken at its word. Below
 	// it every build would fail with "JavaScript heap out of memory", so a
 	// smaller value is read as a mistake - most likely the unit taken for GB.
 	minBuildHeapMB = 256
 )
 
-// Load reads configuration from environment variables, applying defaults
-// for any that are unset (see the Config field comments for the env var
-// names and defaults). It never fails; invalid values fall back to defaults
-// with a logged warning.
-func Load() Config {
-	var config Config
-	config.Port = cmp.Or(os.Getenv("PORT"), "5050")
-	config.SecurityEnable = getEnvAsBool("SECURITY_ENABLED", false)
-	config.KeepHistory = getEnvAsBool("KEEP_HISTORY", true)
-	config.KeepHistoryLatest = getEnvAsInt("KEEP_HISTORY_LATEST", 60)
-	config.CheckResultsInterval = getEnvAsDurationSeconds("CHECK_RESULTS_EVERY_SECONDS", 0)
-	config.OptimizeStorage = getEnvAsBool("OPTIMIZE_STORAGE", false)
-	config.TLS = getEnvAsBool("TLS", false)
-	config.DevMode = getEnvAsBool("DEV_MODE", false)
-	config.ProjectsDir = cmp.Or(os.Getenv("STATIC_CONTENT_PROJECTS"), "/app/projects")
-	config.AllureBin = cmp.Or(os.Getenv("ALLURE_BIN"), "allure")
-	config.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
-	config.MaxConcurrentBuilds = max(getEnvAsInt("MAX_CONCURRENT_BUILDS", 4), 1)
-	config.BuildHeapMB = getEnvAsInt("BUILD_HEAP_MB", defaultBuildHeapMB)
-	if config.BuildHeapMB > 0 && config.BuildHeapMB < minBuildHeapMB {
-		log.Printf("[WARN] BUILD_HEAP_MB=%d, below %d, using %d", config.BuildHeapMB, minBuildHeapMB,
-			defaultBuildHeapMB)
-		config.BuildHeapMB = defaultBuildHeapMB
+// Load reads configuration from environment variables, applying the defaults
+// in Config's tags to any that are unset.
+//
+// A value Load cannot use is an error, never a silent fallback to the
+// default: a service that quietly runs on another number is worse than one
+// that does not start. That covers a value that does not parse into its
+// field's type and one outside the range the field allows. The error names
+// every bad variable, one per line as KEY="value": want ..., so an operator
+// can fix them all from the message alone. A value that fails to parse is
+// reported without the range checks, which would only add noise about a
+// field left at zero.
+func Load() (Config, error) {
+	cfg, err := env.ParseAs[Config]()
+	if err != nil {
+		return Config{}, describeParseErrors(err)
 	}
-
-	return config
-
+	var errs []error
+	if cfg.MaxConcurrentBuilds < 1 {
+		errs = append(errs, invalidEnv("MAX_CONCURRENT_BUILDS", "1 or more"))
+	}
+	if cfg.KeepHistoryLatest < 0 {
+		errs = append(errs, invalidEnv("KEEP_HISTORY_LATEST", "0 or more"))
+	}
+	if cfg.CheckResultsEverySeconds < 0 {
+		errs = append(errs, invalidEnv("CHECK_RESULTS_EVERY_SECONDS", "0 or more"))
+	}
+	if cfg.BuildHeapMB != 0 && cfg.BuildHeapMB < minBuildHeapMB {
+		errs = append(errs, invalidEnv(
+			"BUILD_HEAP_MB",
+			fmt.Sprintf("0 (left to Node) or at least %d", minBuildHeapMB),
+		))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
-// getEnvAsBool parses the env var key as a bool, returning defaultValue if
-// it is unset or fails to parse.
-func getEnvAsBool(key string, defaultValue bool) bool {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return defaultValue
+// describeParseErrors rewrites the errors env.ParseAs returns for values that
+// do not parse into their field's type. The library names the Go field
+// ("KeepHistoryLatest"); an operator knows only the variable, so each part is
+// rebuilt through invalidEnv from the field's env tag. Errors of any other
+// kind are passed through unchanged.
+func describeParseErrors(err error) error {
+	var agg env.AggregateError
+	if !errors.As(err, &agg) {
+		return err
 	}
-	val, err := strconv.ParseBool(raw)
-	if err != nil {
-		log.Printf("[WARN] %s=%q not a bool (%v), using %v", key, raw, err, defaultValue)
-		return defaultValue
+	var errs []error
+	for _, e := range agg.Errors {
+		var pe env.ParseError
+		if !errors.As(e, &pe) {
+			errs = append(errs, e)
+			continue
+		}
+		f, _ := reflect.TypeFor[Config]().FieldByName(pe.Name)
+		key := f.Tag.Get("env")
+		errs = append(errs, invalidEnv(key, pe.Type.String()))
 	}
-	return val
+	return errors.Join(errs...)
 }
 
-// getEnvAsInt parses the env var key as a non-negative int, returning
-// defaultValue if it is unset, fails to parse, or is negative.
-func getEnvAsInt(key string, defaultValue int) int {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return defaultValue
-	}
-
-	val, err := strconv.Atoi(raw)
-	if err != nil {
-		log.Printf("[WARN] %s=%q malformed, using %d", key, raw, defaultValue)
-		return defaultValue
-	}
-
-	if val < 0 {
-		log.Printf("[WARN] %s=%d negative, using %d", key, val, defaultValue)
-		return defaultValue
-	}
-
-	return val
-}
-
-// getEnvAsDurationSeconds parses the env var key as a whole number of
-// seconds and returns it as a time.Duration, returning defaultValue if it
-// is unset, fails to parse, or is not positive.
-func getEnvAsDurationSeconds(key string, defaultValue time.Duration) time.Duration {
-	v := os.Getenv(key)
-	if v == "" {
-		return defaultValue
-	}
-
-	sec, err := strconv.Atoi(v)
-	if err != nil {
-		log.Printf("[WARN] %s=%q not a number, using %v", key, v, defaultValue)
-		return defaultValue
-	}
-
-	if sec <= 0 {
-		log.Printf("[WARN] %s=%d <= 0, using %v", key, sec, defaultValue)
-		return defaultValue
-	}
-
-	return time.Duration(sec) * time.Second
+// invalidEnv reports that the environment variable key holds a value Load
+// cannot use, quoting the value as set and saying what was expected.
+func invalidEnv(key, want string) error {
+	return fmt.Errorf("%s=%q: want %s", key, os.Getenv(key), want)
 }

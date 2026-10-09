@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
@@ -21,29 +23,19 @@ func writeResult(t *testing.T, root, id, name, content string) {
 	t.Helper()
 
 	dir := projects.ResultsDir(root, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", dir, err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
-		t.Fatalf("write %s: %v", name, err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
 }
 
 func writeReport(t *testing.T, root, id string, at time.Time) {
 	t.Helper()
 
 	dir := projects.LatestReportDir(root, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", dir, err)
-	}
+	require.NoError(t, os.MkdirAll(dir, 0o755))
 	index := filepath.Join(dir, "index.html")
-	if err := os.WriteFile(index, []byte("<html></html>"), 0o644); err != nil {
-		t.Fatalf("write %s: %v", index, err)
-	}
+	require.NoError(t, os.WriteFile(index, []byte("<html></html>"), 0o644))
 	for _, p := range []string{index, dir} {
-		if err := os.Chtimes(p, at, at); err != nil {
-			t.Fatalf("chtimes %s: %v", p, err)
-		}
+		require.NoError(t, os.Chtimes(p, at, at))
 	}
 }
 
@@ -52,13 +44,9 @@ func dateResults(t *testing.T, root, id string, at time.Time) {
 
 	dir := projects.ResultsDir(root, id)
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read %s: %v", dir, err)
-	}
+	require.NoError(t, err)
 	for _, e := range entries {
-		if err := os.Chtimes(filepath.Join(dir, e.Name()), at, at); err != nil {
-			t.Fatalf("chtimes %s: %v", e.Name(), err)
-		}
+		require.NoError(t, os.Chtimes(filepath.Join(dir, e.Name()), at, at))
 	}
 }
 
@@ -89,39 +77,23 @@ func (r *recorder) calls() []string {
 // zero value a missing map entry reads as.
 func TestScanEmptyDirIsZeroFingerprint(t *testing.T) {
 	fp, err := scan(t.TempDir())
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err)
 
-	if fp != (fingerprint{}) {
-		t.Errorf("scan of empty dir = %+v, want zero value", fp)
-	}
+	assert.Zero(t, fp)
 }
 
 func TestScanCountsFilesAndSkipsDirs(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(dir, "a.json"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "b.json"), []byte("!"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "nested"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.json"), []byte("hello"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.json"), []byte("!"), 0o644))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "nested"), 0o755))
 
 	fp, err := scan(dir)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err)
 
-	if fp.count != 2 {
-		t.Errorf("count = %d, want 2 (the nested directory must not be counted)", fp.count)
-	}
-	if fp.size != 6 {
-		t.Errorf("size = %d, want 6", fp.size)
-	}
+	assert.Equal(t, 2, fp.count, "the nested directory must not be counted")
+	assert.EqualValues(t, 6, fp.size)
 }
 
 func TestScanTracksNewestModTime(t *testing.T) {
@@ -130,74 +102,44 @@ func TestScanTracksNewestModTime(t *testing.T) {
 	old := filepath.Join(dir, "old.json")
 	recent := filepath.Join(dir, "recent.json")
 	for _, p := range []string{old, recent} {
-		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(p, []byte("x"), 0o644))
 	}
 
 	base := time.Now().Add(-time.Hour)
-	if err := os.Chtimes(old, base, base); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(recent, base.Add(time.Minute), base.Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chtimes(old, base, base))
+	require.NoError(t, os.Chtimes(recent, base.Add(time.Minute), base.Add(time.Minute)))
 
 	info, err := os.Stat(recent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := info.ModTime().UnixNano()
+	require.NoError(t, err)
 
 	fp, err := scan(dir)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err)
 
-	if fp.newest != want {
-		t.Errorf("newest = %d, want %d (the later of the two mtimes)", fp.newest, want)
-	}
+	assert.Equal(t, info.ModTime().UnixNano(), fp.newest, "want the later of the two mtimes")
 }
 
 func TestScanIgnoresExecutorFile(t *testing.T) {
 	dir := t.TempDir()
 
-	if err := os.WriteFile(filepath.Join(dir, "a-result.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a-result.json"), []byte("{}"), 0o644))
 	before, err := scan(dir)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
+	require.NoError(t, err)
 
-	if err := os.WriteFile(filepath.Join(dir, projects.ExecutorFileName), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, projects.ExecutorFileName), []byte("{}"), 0o644))
 	afterExecutor, err := scan(dir)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if afterExecutor != before {
-		t.Errorf("fingerprint changed after writing %s: before=%+v after=%+v", projects.ExecutorFileName, before, afterExecutor)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, before, afterExecutor, "fingerprint changed after writing %s", projects.ExecutorFileName)
 
-	if err := os.WriteFile(filepath.Join(dir, "b-result.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b-result.json"), []byte("{}"), 0o644))
 	afterResult, err := scan(dir)
-	if err != nil {
-		t.Fatalf("scan: %v", err)
-	}
-	if afterResult == afterExecutor {
-		t.Error("fingerprint did not change after writing an ordinary result file")
-	}
+	require.NoError(t, err)
+	assert.NotEqual(t, afterExecutor, afterResult, "fingerprint did not change after writing an ordinary result file")
 }
 
 func TestScanMissingDirReturnsError(t *testing.T) {
 	_, err := scan(filepath.Join(t.TempDir(), "nope"))
-	if err == nil {
-		t.Fatal("scan of a missing directory returned nil error")
-	}
+
+	assert.Error(t, err)
 }
 
 // A restart must not rebuild every project: results older than the published
@@ -214,12 +156,8 @@ func TestSweepWarmUpSkipsAnUpToDateReport(t *testing.T) {
 
 	sweep(context.Background(), root, seen, rec.start, true)
 
-	if got := rec.calls(); len(got) != 0 {
-		t.Errorf("warm-up pass started builds for %v, want none", got)
-	}
-	if _, ok := seen["proj"]; !ok {
-		t.Error("warm-up pass did not record a fingerprint, so the next tick would rebuild")
-	}
+	assert.Empty(t, rec.calls())
+	assert.Contains(t, seen, "proj", "warm-up pass did not record a fingerprint, so the next tick would rebuild")
 }
 
 // Results uploaded after the last report - while the service was down, or in
@@ -237,15 +175,11 @@ func TestSweepWarmUpBuildsResultsNewerThanTheReport(t *testing.T) {
 
 	sweep(context.Background(), root, seen, rec.start, true)
 
-	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
-		t.Fatalf("warm-up pass started builds for %v, want [proj]", got)
-	}
+	require.Equal(t, []string{"proj"}, rec.calls())
 
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 1 {
-		t.Errorf("calls after an unchanged tick = %v, want the build not to be repeated", got)
-	}
+	assert.Len(t, rec.calls(), 1, "want the build not to be repeated on an unchanged tick")
 }
 
 // A report dated like its newest result is the build of those results.
@@ -259,9 +193,7 @@ func TestSweepWarmUpSkipsAReportDatedLikeItsResults(t *testing.T) {
 	rec := &recorder{}
 	sweep(context.Background(), root, map[string]fingerprint{}, rec.start, true)
 
-	if got := rec.calls(); len(got) != 0 {
-		t.Errorf("warm-up pass started builds for %v, want none", got)
-	}
+	assert.Empty(t, rec.calls())
 }
 
 // A report the watcher cannot stat counts as unbuilt: a needless build costs
@@ -272,17 +204,13 @@ func TestSweepWarmUpBuildsWhenTheReportCannotBeChecked(t *testing.T) {
 	writeReport(t, root, "proj", upToDate)
 
 	reports := projects.ReportsDir(root, "proj")
-	if err := os.Chmod(reports, 0o000); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Chmod(reports, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(reports, 0o755) })
 
 	rec := &recorder{}
 	sweep(context.Background(), root, map[string]fingerprint{}, rec.start, true)
 
-	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
-		t.Errorf("warm-up pass started builds for %v, want [proj]", got)
-	}
+	assert.Equal(t, []string{"proj"}, rec.calls())
 }
 
 func TestSweepWarmUpBuildsResultsThatHaveNoReport(t *testing.T) {
@@ -294,9 +222,7 @@ func TestSweepWarmUpBuildsResultsThatHaveNoReport(t *testing.T) {
 
 	sweep(context.Background(), root, seen, rec.start, true)
 
-	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
-		t.Errorf("warm-up pass started builds for %v, want [proj]", got)
-	}
+	assert.Equal(t, []string{"proj"}, rec.calls())
 }
 
 func TestSweepStartsOnChange(t *testing.T) {
@@ -311,15 +237,11 @@ func TestSweepStartsOnChange(t *testing.T) {
 	writeResult(t, root, "proj", "b-result.json", "{}")
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 1 || got[0] != "proj" {
-		t.Fatalf("calls = %v, want [proj]", got)
-	}
+	require.Equal(t, []string{"proj"}, rec.calls())
 
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 1 {
-		t.Errorf("calls after an unchanged tick = %v, want the build not to be repeated", got)
-	}
+	assert.Len(t, rec.calls(), 1, "want the build not to be repeated on an unchanged tick")
 }
 
 // A build refused as already running must not consume the change, or the
@@ -337,9 +259,7 @@ func TestSweepKeepsFingerprintWhenAlreadyRunning(t *testing.T) {
 	sweep(context.Background(), root, seen, rec.start, false)
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 2 {
-		t.Errorf("calls = %v, want the refused change to be retried on the next tick", got)
-	}
+	assert.Len(t, rec.calls(), 2, "want the refused change to be retried on the next tick")
 }
 
 // A build already running is the normal case when CI starts one and the
@@ -361,9 +281,7 @@ func TestSweepDoesNotLogAlreadyRunningAsAnError(t *testing.T) {
 	writeResult(t, root, "proj", "b-result.json", "{}")
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if strings.Contains(logs.String(), "level=ERROR") {
-		t.Errorf("a refused duplicate was logged as an error:\n%s", logs.String())
-	}
+	assert.NotContains(t, logs.String(), "level=ERROR")
 }
 
 func TestSweepKeepsFingerprintOnError(t *testing.T) {
@@ -379,9 +297,7 @@ func TestSweepKeepsFingerprintOnError(t *testing.T) {
 	sweep(context.Background(), root, seen, rec.start, false)
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 2 {
-		t.Errorf("calls = %v, want a failed start to be retried", got)
-	}
+	assert.Len(t, rec.calls(), 2, "want a failed start to be retried")
 }
 
 // An emptied results directory has nothing to build until the next upload
@@ -395,15 +311,11 @@ func TestSweepConsumesAChangeWithNothingLeftToBuild(t *testing.T) {
 	seen := map[string]fingerprint{}
 
 	sweep(context.Background(), root, seen, rec.start, true)
-	if err := os.Remove(filepath.Join(projects.ResultsDir(root, "proj"), "a-result.json")); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.Remove(filepath.Join(projects.ResultsDir(root, "proj"), "a-result.json")))
 	sweep(context.Background(), root, seen, rec.start, false)
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 1 {
-		t.Errorf("calls = %v, want an empty results directory not to be retried", got)
-	}
+	assert.Len(t, rec.calls(), 1, "want an empty results directory not to be retried")
 }
 
 func TestSweepIgnoresDirectoriesThatAreNotProjects(t *testing.T) {
@@ -417,37 +329,23 @@ func TestSweepIgnoresDirectoriesThatAreNotProjects(t *testing.T) {
 	sweep(context.Background(), root, seen, rec.start, false)
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 0 {
-		t.Errorf("calls = %v, want a directory that is not a project to be left alone", got)
-	}
+	assert.Empty(t, rec.calls())
 }
 
 func TestSweepIgnoresProjectsWithNothingToBuild(t *testing.T) {
 	root := t.TempDir()
 
-	if err := os.MkdirAll(projects.ResultsDir(root, "empty"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(root, "bare"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(filepath.Join(root, "README"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.MkdirAll(projects.ResultsDir(root, "empty"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "bare"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "README"), []byte("x"), 0o644))
 
 	rec := &recorder{}
 	seen := map[string]fingerprint{}
 
 	sweep(context.Background(), root, seen, rec.start, false)
 
-	if got := rec.calls(); len(got) != 0 {
-		t.Errorf("calls = %v, want none", got)
-	}
-	if len(seen) != 0 {
-		t.Errorf("seen = %v, want no entries recorded", seen)
-	}
+	assert.Empty(t, rec.calls())
+	assert.Empty(t, seen)
 }
 
 func TestSweepMissingProjectsDirDoesNotPanic(t *testing.T) {
@@ -455,9 +353,7 @@ func TestSweepMissingProjectsDirDoesNotPanic(t *testing.T) {
 
 	sweep(context.Background(), filepath.Join(t.TempDir(), "gone"), map[string]fingerprint{}, rec.start, false)
 
-	if got := rec.calls(); len(got) != 0 {
-		t.Errorf("calls = %v, want none", got)
-	}
+	assert.Empty(t, rec.calls())
 }
 
 func TestRunDisabledReturnsImmediately(t *testing.T) {
@@ -470,7 +366,7 @@ func TestRunDisabledReturnsImmediately(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("Run with a non-positive interval did not return")
+		require.FailNow(t, "Run with a non-positive interval did not return")
 	}
 }
 
@@ -488,7 +384,7 @@ func TestRunStopsOnContextCancel(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after its context was cancelled")
+		require.FailNow(t, "Run did not return after its context was cancelled")
 	}
 }
 
@@ -520,11 +416,9 @@ func TestRunStartsBuildAfterWarmUp(t *testing.T) {
 
 	select {
 	case id := <-started:
-		if id != "proj" {
-			t.Errorf("started %q, want proj", id)
-		}
+		assert.Equal(t, "proj", id)
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run never started a build for the changed project")
+		require.FailNow(t, "Run never started a build for the changed project")
 	}
 
 	cancel()
@@ -532,6 +426,6 @@ func TestRunStartsBuildAfterWarmUp(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return after its context was cancelled")
+		require.FailNow(t, "Run did not return after its context was cancelled")
 	}
 }

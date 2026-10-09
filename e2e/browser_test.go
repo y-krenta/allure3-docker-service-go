@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 type browserDriver struct {
@@ -67,9 +69,7 @@ func TestReportOpensATestInEachBrowser(t *testing.T) {
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
 			d, ok := browserDrivers[name]
-			if !ok {
-				t.Fatalf("E2E_BROWSERS names %q, want chrome, firefox or safari", name)
-			}
+			require.True(t, ok, "E2E_BROWSERS names %q, want chrome, firefox or safari", name)
 			s := openSession(t, d)
 			s.call(http.MethodPost, "/url", map[string]any{"url": page}, nil)
 			s.waitForText(testStepName)
@@ -89,18 +89,12 @@ func openSession(t *testing.T, d browserDriver) *session {
 	if err != nil && d.envDir != "" && os.Getenv(d.envDir) != "" {
 		bin, err = exec.LookPath(filepath.Join(os.Getenv(d.envDir), d.bin))
 	}
-	if err != nil {
-		t.Fatalf("%s not found: %v", d.bin, err)
-	}
+	require.NoError(t, err, "%s not found", d.bin)
 
 	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	cmd := exec.Command(bin, d.args(port)...)
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("starting %s: %v", d.bin, err)
-	}
+	require.NoError(t, cmd.Start(), "starting %s", d.bin)
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
@@ -117,7 +111,7 @@ func openSession(t *testing.T, d browserDriver) *session {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s did not answer /status within 15s: %v", d.bin, err)
+			require.FailNow(t, "driver did not answer /status within 15s", "%s: %v", d.bin, err)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -153,7 +147,8 @@ func (s *session) waitForText(text string) {
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	s.t.Fatalf("the page never showed %q within 30s - the report unmounted or never rendered the test\n%.2000s", text, dom)
+	require.FailNow(s.t, "the report unmounted or never rendered the test",
+		"the page never showed %q within 30s\n%.2000s", text, dom)
 }
 
 func webdriver(t *testing.T, ctx context.Context, method, url string, body, value any) {
@@ -162,39 +157,25 @@ func webdriver(t *testing.T, ctx context.Context, method, url string, body, valu
 	var r io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
-		if err != nil {
-			t.Fatalf("webdriver %s %s: %v", method, url, err)
-		}
+		require.NoError(t, err, "webdriver %s %s", method, url)
 		r = bytes.NewReader(data)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, r)
-	if err != nil {
-		t.Fatalf("webdriver %s %s: %v", method, url, err)
-	}
+	require.NoError(t, err, "webdriver %s %s", method, url)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("webdriver %s %s: %v", method, url, err)
-	}
+	require.NoError(t, err, "webdriver %s %s", method, url)
 	defer func() { _ = resp.Body.Close() }()
 	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("webdriver %s %s: reading body: %v", method, url, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("webdriver %s %s = %d\n%s", method, url, resp.StatusCode, raw)
-	}
+	require.NoError(t, err, "webdriver %s %s: reading body", method, url)
+	require.Equal(t, http.StatusOK, resp.StatusCode, "webdriver %s %s\n%s", method, url, raw)
 	if value == nil {
 		return
 	}
 	var envelope struct {
 		Value json.RawMessage `json:"value"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil {
-		t.Fatalf("webdriver %s %s: answer is not JSON: %v\n%s", method, url, err, raw)
-	}
-	if err := json.Unmarshal(envelope.Value, value); err != nil {
-		t.Fatalf("webdriver %s %s: unexpected value: %v\n%s", method, url, err, raw)
-	}
+	require.NoError(t, json.Unmarshal(raw, &envelope), "webdriver %s %s: answer is not JSON\n%s", method, url, raw)
+	require.NoError(t, json.Unmarshal(envelope.Value, value), "webdriver %s %s: unexpected value\n%s", method, url, raw)
 }

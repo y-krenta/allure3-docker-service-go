@@ -227,7 +227,7 @@ func (s *Server) serveProjectReport(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	reportPath := r.PathValue("path")
+	reportPath := r.PathValue("*")
 	reportPath = path.Clean(reportPath)
 	if reportPath == "." {
 		http.Error(w, "path empty", http.StatusBadRequest)

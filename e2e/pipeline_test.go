@@ -1,9 +1,10 @@
 package e2e
 
 import (
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // summary is the slice of a report's summary.json these tests read: the
@@ -33,27 +34,20 @@ func TestCIPipeline(t *testing.T) {
 	c.requireSucceeded(id)
 
 	resp, page := c.get("/projects/" + id + "/latest-report")
-	if want := "/projects/" + id + "/reports/latest/"; resp.Request.URL.Path != want {
-		t.Errorf("latest-report led to %s, want %s", resp.Request.URL.Path, want)
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
-		t.Errorf("report page Content-Type = %q, want text/html", ct)
-	}
-	if !strings.Contains(string(page), "<html") {
-		t.Errorf("report page is not an HTML document:\n%.300s", page)
-	}
+	assert.Equal(t, "/projects/"+id+"/reports/latest/", resp.Request.URL.Path)
+	ct := resp.Header.Get("Content-Type")
+	assert.True(t, strings.HasPrefix(ct, "text/html"), "report page Content-Type = %q, want text/html", ct)
+	assert.Contains(t, string(page), "<html")
 
 	var sum summary
 	c.getJSON("/projects/"+id+"/reports/latest/summary.json", &sum)
-	if sum.Stats.Total != 3 || sum.Stats.Passed != 2 || sum.Stats.Failed != 1 {
-		t.Errorf("report counts %+v, want total 3, passed 2, failed 1", sum.Stats)
-	}
+	assert.Equal(t, 3, sum.Stats.Total)
+	assert.Equal(t, 2, sum.Stats.Passed)
+	assert.Equal(t, 1, sum.Stats.Failed)
 
 	var builds struct {
 		Builds []string `json:"builds"`
 	}
 	c.getJSON("/projects/"+id, &builds)
-	if !slices.Contains(builds.Builds, "latest") {
-		t.Errorf("project lists builds %v, want latest among them", builds.Builds)
-	}
+	assert.Contains(t, builds.Builds, "latest")
 }

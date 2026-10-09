@@ -2,7 +2,6 @@ package projects
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +9,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateProjectID(t *testing.T) {
@@ -62,14 +64,9 @@ func TestValidateProjectID(t *testing.T) {
 			err := ValidateProjectID(tt.id)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("ValidateProjectID(%q) error = nil, want error", tt.id)
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("ValidateProjectID(%q) error = %v, want nil", tt.id, err)
+				assert.Error(t, err, tt.id)
+			} else {
+				assert.NoError(t, err, tt.id)
 			}
 		})
 	}
@@ -122,19 +119,11 @@ func TestSanitizeResultFileName(t *testing.T) {
 			got, err := SanitizeResultFileName(tt.input)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("SanitizeResultFileName(%q) error = nil, want error", tt.input)
-				}
+				assert.Error(t, err, tt.input)
 				return
 			}
-
-			if err != nil {
-				t.Fatalf("SanitizeResultFileName(%q) error = %v, want nil", tt.input, err)
-			}
-
-			if got != tt.want {
-				t.Fatalf("SanitizeResultFileName(%q) = %q, want %q", tt.input, got, tt.want)
-			}
+			require.NoError(t, err, tt.input)
+			assert.Equal(t, tt.want, got, tt.input)
 		})
 	}
 }
@@ -156,117 +145,69 @@ func TestCreateDir(t *testing.T) {
 	t.Run("creates reports and results", func(t *testing.T) {
 		base := t.TempDir()
 
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("CreateDir(base, %q) returned unexpected error: %v", "demo", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 
-		for _, dir := range []string{ReportsDir(base, "demo"), ResultsDir(base, "demo")} {
-			info, err := os.Stat(dir)
-			if err != nil {
-				t.Errorf("stat %q: %v", dir, err)
-				continue
-			}
-			if !info.IsDir() {
-				t.Errorf("%q exists but is not a directory", dir)
-			}
-		}
+		assert.DirExists(t, ReportsDir(base, "demo"))
+		assert.DirExists(t, ResultsDir(base, "demo"))
 	})
 
 	t.Run("existing project reports ErrProjectExists", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("first CreateDir returned unexpected error: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 
-		err := CreateDir(base, "demo")
-		if !errors.Is(err, ErrProjectExists) {
-			t.Fatalf("second CreateDir error = %v, want ErrProjectExists", err)
-		}
+		assert.ErrorIs(t, CreateDir(base, "demo"), ErrProjectExists)
 	})
 
 	t.Run("plain file in place of project dir reports ErrProjectExists", func(t *testing.T) {
 		base := t.TempDir()
-		if err := os.WriteFile(filepath.Join(base, "demo"), nil, 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(base, "demo"), nil, 0644))
 
-		err := CreateDir(base, "demo")
-		if !errors.Is(err, ErrProjectExists) {
-			t.Fatalf("CreateDir error = %v, want ErrProjectExists", err)
-		}
+		assert.ErrorIs(t, CreateDir(base, "demo"), ErrProjectExists)
 	})
 
 	t.Run("missing base dir fails without creating anything", func(t *testing.T) {
 		base := filepath.Join(t.TempDir(), "does-not-exist")
 
 		err := CreateDir(base, "demo")
-		if err == nil {
-			t.Fatal("CreateDir with a missing base dir returned nil, want error")
-		}
-		if errors.Is(err, ErrProjectExists) {
-			t.Fatalf("CreateDir error = %v, want a filesystem error", err)
-		}
-		if _, err := os.Stat(base); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("base dir %q was created, want it left alone", base)
-		}
+		require.Error(t, err)
+		assert.NotErrorIs(t, err, ErrProjectExists)
+
+		_, err = os.Stat(base)
+		assert.ErrorIs(t, err, os.ErrNotExist, "base dir was created, want it left alone")
 	})
 }
 
 func TestClearResults(t *testing.T) {
 	t.Run("removes top-level files, leaves subdirectories", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 		results := ResultsDir(base, "demo")
-		if err := os.WriteFile(filepath.Join(results, "a-result.json"), []byte("{}"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(results, "b-result.json"), []byte("{}"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(results, "a-result.json"), []byte("{}"), 0644))
+		require.NoError(t, os.WriteFile(filepath.Join(results, "b-result.json"), []byte("{}"), 0644))
 		sub := filepath.Join(results, "kept-dir")
-		if err := os.MkdirAll(sub, 0755); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(sub, "inside.json"), []byte("{}"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(sub, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(sub, "inside.json"), []byte("{}"), 0644))
 
-		if err := ClearResults(base, "demo"); err != nil {
-			t.Fatalf("ClearResults returned unexpected error: %v", err)
-		}
+		require.NoError(t, ClearResults(base, "demo"))
 
 		entries, err := os.ReadDir(results)
-		if err != nil {
-			t.Fatalf("ReadDir after ClearResults: %v", err)
-		}
-		if len(entries) != 1 || entries[0].Name() != "kept-dir" {
-			t.Fatalf("results dir after ClearResults = %v, want only kept-dir", entries)
-		}
-		if _, err := os.Stat(filepath.Join(sub, "inside.json")); err != nil {
-			t.Errorf("file inside kept-dir was removed: %v", err)
-		}
+		require.NoError(t, err)
+		require.Len(t, entries, 1)
+		assert.Equal(t, "kept-dir", entries[0].Name())
+		assert.FileExists(t, filepath.Join(sub, "inside.json"))
 	})
 
 	t.Run("already-empty results directory succeeds", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 
-		if err := ClearResults(base, "demo"); err != nil {
-			t.Fatalf("ClearResults on empty results returned unexpected error: %v", err)
-		}
+		assert.NoError(t, ClearResults(base, "demo"))
 	})
 
 	t.Run("missing results directory reports the error", func(t *testing.T) {
 		base := t.TempDir()
 
-		err := ClearResults(base, "nosuch")
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("ClearResults error = %v, want it to wrap fs.ErrNotExist", err)
-		}
+		assert.ErrorIs(t, ClearResults(base, "nosuch"), os.ErrNotExist)
 	})
 }
 
@@ -275,85 +216,54 @@ func TestClearHistory(t *testing.T) {
 	writeArchive := func(t *testing.T, base, id, name string) {
 		t.Helper()
 		dir := filepath.Join(ReportsDir(base, id), name)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>"+name+"</h1>"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(dir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>"+name+"</h1>"), 0644))
 	}
 
 	t.Run("removes numbered archives, leaves latest and non-numeric entries", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 		writeArchive(t, base, "demo", "latest")
 		writeArchive(t, base, "demo", "1")
 		writeArchive(t, base, "demo", "2")
-		if err := os.WriteFile(filepath.Join(ReportsDir(base, "demo"), "notes.txt"), nil, 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(ReportsDir(base, "demo"), "notes.txt"), nil, 0644))
 
-		if err := ClearHistory(base, "demo"); err != nil {
-			t.Fatalf("ClearHistory returned unexpected error: %v", err)
-		}
+		require.NoError(t, ClearHistory(base, "demo"))
 
-		for _, kept := range []string{"latest", "notes.txt"} {
-			if _, err := os.Stat(filepath.Join(ReportsDir(base, "demo"), kept)); err != nil {
-				t.Errorf("%q was removed, want it kept: %v", kept, err)
-			}
-		}
+		assert.DirExists(t, filepath.Join(ReportsDir(base, "demo"), "latest"))
+		assert.FileExists(t, filepath.Join(ReportsDir(base, "demo"), "notes.txt"))
 		for _, gone := range []string{"1", "2"} {
-			if _, err := os.Stat(filepath.Join(ReportsDir(base, "demo"), gone)); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("archive %q still exists, want it removed (stat err = %v)", gone, err)
-			}
+			_, err := os.Stat(filepath.Join(ReportsDir(base, "demo"), gone))
+			assert.ErrorIs(t, err, os.ErrNotExist, "archive %q still exists", gone)
 		}
 	})
 
 	t.Run("removes history file and executor.json", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		if err := os.WriteFile(HistoryFile(base, "demo"), []byte(`{"n":1}`), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
+		require.NoError(t, os.WriteFile(HistoryFile(base, "demo"), []byte(`{"n":1}`), 0644))
 		executor := filepath.Join(ResultsDir(base, "demo"), ExecutorFileName)
-		if err := os.WriteFile(executor, []byte(`{"buildOrder":5}`), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(executor, []byte(`{"buildOrder":5}`), 0644))
 
-		if err := ClearHistory(base, "demo"); err != nil {
-			t.Fatalf("ClearHistory returned unexpected error: %v", err)
-		}
+		require.NoError(t, ClearHistory(base, "demo"))
 
-		if _, err := os.Stat(HistoryFile(base, "demo")); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("history file still exists (stat err = %v)", err)
-		}
-		if _, err := os.Stat(executor); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("executor.json still exists (stat err = %v)", err)
-		}
+		_, err := os.Stat(HistoryFile(base, "demo"))
+		assert.ErrorIs(t, err, os.ErrNotExist, "history file still exists")
+		_, err = os.Stat(executor)
+		assert.ErrorIs(t, err, os.ErrNotExist, "executor.json still exists")
 	})
 
 	t.Run("fresh project with nothing to clear succeeds", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 
-		if err := ClearHistory(base, "demo"); err != nil {
-			t.Fatalf("ClearHistory on a fresh project returned unexpected error: %v", err)
-		}
+		assert.NoError(t, ClearHistory(base, "demo"))
 	})
 
 	t.Run("missing reports directory reports the error", func(t *testing.T) {
 		base := t.TempDir()
 
-		err := ClearHistory(base, "nosuch")
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("ClearHistory error = %v, want it to wrap fs.ErrNotExist", err)
-		}
+		assert.ErrorIs(t, ClearHistory(base, "nosuch"), os.ErrNotExist)
 	})
 }
 
@@ -366,9 +276,8 @@ func TestHistoryFileStaysOutOfResults(t *testing.T) {
 	history := HistoryFile(base, "demo")
 	results := ResultsDir(base, "demo") + string(filepath.Separator)
 
-	if strings.HasPrefix(history, results) {
-		t.Errorf("HistoryFile = %q, want it outside the results dir %q", history, results)
-	}
+	assert.Falsef(t, strings.HasPrefix(history, results),
+		"HistoryFile = %q, want it outside the results dir %q", history, results)
 }
 
 // CleanTmp clears what killed builds left in each project's .tmp, and leaves
@@ -379,12 +288,8 @@ func TestCleanTmp(t *testing.T) {
 		t.Helper()
 		tmp := TmpRoot(base, id)
 		dir := filepath.Join(tmp, "build-1")
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>stale</h1>"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(dir, 0755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "index.html"), []byte("<h1>stale</h1>"), 0644))
 		return tmp
 	}
 
@@ -400,111 +305,69 @@ func TestCleanTmp(t *testing.T) {
 		base := t.TempDir()
 		var staged []string
 		for _, id := range []string{"alpha", "beta", "gamma"} {
-			if err := CreateDir(base, id); err != nil {
-				t.Fatalf("setup: %v", err)
-			}
+			require.NoError(t, CreateDir(base, id))
 			staged = append(staged, stageTmp(t, base, id))
 		}
 
-		if err := os.WriteFile(filepath.Join(base, "README.txt"), []byte("not a project"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(base, "README.txt"), []byte("not a project"), 0644))
 
-		if err := CleanTmp(base); err != nil {
-			t.Fatalf("CleanTmp returned unexpected error: %v", err)
-		}
+		require.NoError(t, CleanTmp(base))
 
 		for _, tmp := range staged {
-			if _, err := os.Stat(tmp); !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("%q still exists after CleanTmp (stat error = %v)", tmp, err)
-			}
+			_, err := os.Stat(tmp)
+			assert.ErrorIs(t, err, os.ErrNotExist, "%q still exists after CleanTmp", tmp)
 		}
 	})
 
 	t.Run("leaves results and reports untouched", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 		stageTmp(t, base, "demo")
 		result := filepath.Join(ResultsDir(base, "demo"), "a-result.json")
-		if err := os.WriteFile(result, []byte("{}"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(result, []byte("{}"), 0644))
 		published := filepath.Join(LatestReportDir(base, "demo"), "index.html")
-		if err := os.MkdirAll(LatestReportDir(base, "demo"), 0755); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		if err := os.WriteFile(published, []byte("<h1>report</h1>"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(LatestReportDir(base, "demo"), 0755))
+		require.NoError(t, os.WriteFile(published, []byte("<h1>report</h1>"), 0644))
 
-		if err := CleanTmp(base); err != nil {
-			t.Fatalf("CleanTmp returned unexpected error: %v", err)
-		}
+		require.NoError(t, CleanTmp(base))
 
-		for _, path := range []string{result, published} {
-			if _, err := os.Stat(path); err != nil {
-				t.Errorf("CleanTmp removed %q: %v", path, err)
-			}
-		}
+		assert.FileExists(t, result)
+		assert.FileExists(t, published)
 	})
 
 	t.Run("a project without .tmp is not an error", func(t *testing.T) {
 		base := t.TempDir()
-		if err := CreateDir(base, "demo"); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, "demo"))
 
-		if err := CleanTmp(base); err != nil {
-			t.Fatalf("CleanTmp returned unexpected error: %v", err)
-		}
-		if _, err := os.Stat(ProjectDir(base, "demo")); err != nil {
-			t.Errorf("project directory disappeared: %v", err)
-		}
+		require.NoError(t, CleanTmp(base))
+		assert.DirExists(t, ProjectDir(base, "demo"))
 	})
 
 	t.Run("empty projects directory is not an error", func(t *testing.T) {
-		if err := CleanTmp(t.TempDir()); err != nil {
-			t.Fatalf("CleanTmp on empty root returned unexpected error: %v", err)
-		}
+		assert.NoError(t, CleanTmp(t.TempDir()))
 	})
 
 	t.Run("skips files and directories that are not projects", func(t *testing.T) {
 		base := t.TempDir()
 		loose := filepath.Join(base, "README.txt")
-		if err := os.WriteFile(loose, []byte("not a project"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(loose, []byte("not a project"), 0644))
 
-		if err := os.WriteFile(filepath.Join(base, "alpha"), []byte("not a project"), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(base, "alpha"), []byte("not a project"), 0644))
 		foreign := []string{"NotAProject", ".hidden"}
 		var kept []string
 		for _, name := range foreign {
 			dir := filepath.Join(base, name, ".tmp")
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				t.Fatalf("setup: %v", err)
-			}
+			require.NoError(t, os.MkdirAll(dir, 0755))
 			kept = append(kept, dir)
 		}
 
 		logged := captureLog(t)
-		if err := CleanTmp(base); err != nil {
-			t.Fatalf("CleanTmp returned unexpected error: %v", err)
-		}
+		require.NoError(t, CleanTmp(base))
 
-		if logged.Len() != 0 {
-			t.Errorf("CleanTmp logged about a non-project entry: %s", logged.String())
-		}
-		if _, err := os.Stat(loose); err != nil {
-			t.Errorf("CleanTmp removed a loose file: %v", err)
-		}
+		assert.Empty(t, logged.String(), "CleanTmp logged about a non-project entry")
+		assert.FileExists(t, loose)
 		for _, dir := range kept {
-			if _, err := os.Stat(dir); err != nil {
-				t.Errorf("CleanTmp removed %q, which is not a project: %v", dir, err)
-			}
+			assert.DirExists(t, dir, "CleanTmp removed a directory that is not a project")
 		}
 	})
 
@@ -514,40 +377,24 @@ func TestCleanTmp(t *testing.T) {
 		}
 		base := t.TempDir()
 		for _, id := range []string{"alpha", "beta"} {
-			if err := CreateDir(base, id); err != nil {
-				t.Fatalf("setup: %v", err)
-			}
+			require.NoError(t, CreateDir(base, id))
 			stageTmp(t, base, id)
 		}
 
 		locked := ProjectDir(base, "alpha")
-		if err := os.Chmod(locked, 0500); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(locked, 0755); err != nil {
-				t.Errorf("cleanup: restoring permissions on %q: %v", locked, err)
-			}
-		})
+		require.NoError(t, os.Chmod(locked, 0500))
+		t.Cleanup(func() { assert.NoError(t, os.Chmod(locked, 0755)) })
 
 		logged := captureLog(t)
-		if err := CleanTmp(base); err != nil {
-			t.Fatalf("CleanTmp returned an error for one unremovable project: %v", err)
-		}
+		require.NoError(t, CleanTmp(base))
 
-		if !strings.Contains(logged.String(), TmpRoot(base, "alpha")) {
-			t.Errorf("CleanTmp did not log the project it could not clean, log = %q", logged.String())
-		}
-		if _, err := os.Stat(TmpRoot(base, "beta")); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("beta was not cleaned after alpha failed (stat error = %v)", err)
-		}
+		assert.Contains(t, logged.String(), TmpRoot(base, "alpha"))
+		_, err := os.Stat(TmpRoot(base, "beta"))
+		assert.ErrorIs(t, err, os.ErrNotExist, "beta was not cleaned after alpha failed")
 	})
 
 	t.Run("missing projects directory reports the error", func(t *testing.T) {
-		err := CleanTmp(filepath.Join(t.TempDir(), "nosuch"))
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("CleanTmp error = %v, want it to wrap fs.ErrNotExist", err)
-		}
+		assert.ErrorIs(t, CleanTmp(filepath.Join(t.TempDir(), "nosuch")), os.ErrNotExist)
 	})
 }
 
@@ -557,23 +404,17 @@ func TestSeedHistory(t *testing.T) {
 
 	seedProject := func(t *testing.T, base, id, content string) {
 		t.Helper()
-		if err := CreateDir(base, id); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, CreateDir(base, id))
 		if content == "" {
 			return
 		}
-		if err := os.WriteFile(HistoryFile(base, id), []byte(content), 0644); err != nil {
-			t.Fatalf("setup: %v", err)
-		}
+		require.NoError(t, os.WriteFile(HistoryFile(base, id), []byte(content), 0644))
 	}
 
 	projectFiles := func(t *testing.T, base, id string) []string {
 		t.Helper()
 		entries, err := os.ReadDir(ProjectDir(base, id))
-		if err != nil {
-			t.Fatalf("failed to read project dir: %v", err)
-		}
+		require.NoError(t, err)
 		names := make([]string, 0, len(entries))
 		for _, entry := range entries {
 			names = append(names, entry.Name())
@@ -586,18 +427,11 @@ func TestSeedHistory(t *testing.T) {
 		seedProject(t, base, "src", "{\"run\":1}\n{\"run\":2}\n")
 		seedProject(t, base, "dst", "{\"stale\":true}\n")
 
-		if err := SeedHistory(base, "dst", "src"); err != nil {
-			t.Fatalf("SeedHistory returned unexpected error: %v", err)
-		}
+		require.NoError(t, SeedHistory(base, "dst", "src"))
 
 		got, err := os.ReadFile(HistoryFile(base, "dst"))
-		if err != nil {
-			t.Fatalf("reading the seeded history: %v", err)
-		}
-		want := "{\"run\":1}\n{\"run\":2}\n"
-		if string(got) != want {
-			t.Errorf("seeded history = %q, want %q", got, want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "{\"run\":1}\n{\"run\":2}\n", string(got))
 	})
 
 	t.Run("leaves the source history untouched", func(t *testing.T) {
@@ -605,17 +439,11 @@ func TestSeedHistory(t *testing.T) {
 		seedProject(t, base, "src", "{\"run\":1}\n")
 		seedProject(t, base, "dst", "")
 
-		if err := SeedHistory(base, "dst", "src"); err != nil {
-			t.Fatalf("SeedHistory returned unexpected error: %v", err)
-		}
+		require.NoError(t, SeedHistory(base, "dst", "src"))
 
 		got, err := os.ReadFile(HistoryFile(base, "src"))
-		if err != nil {
-			t.Fatalf("reading the source history: %v", err)
-		}
-		if string(got) != "{\"run\":1}\n" {
-			t.Errorf("source history = %q, want it unchanged", got)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "{\"run\":1}\n", string(got))
 	})
 
 	t.Run("target with no history of its own is seeded", func(t *testing.T) {
@@ -623,13 +451,9 @@ func TestSeedHistory(t *testing.T) {
 		seedProject(t, base, "src", "{\"run\":1}\n")
 		seedProject(t, base, "dst", "")
 
-		if err := SeedHistory(base, "dst", "src"); err != nil {
-			t.Fatalf("SeedHistory returned unexpected error: %v", err)
-		}
+		require.NoError(t, SeedHistory(base, "dst", "src"))
 
-		if _, err := os.Stat(HistoryFile(base, "dst")); err != nil {
-			t.Errorf("target has no history after seeding: %v", err)
-		}
+		assert.FileExists(t, HistoryFile(base, "dst"))
 	})
 
 	t.Run("source without history clears the target and reports ErrNoHistory", func(t *testing.T) {
@@ -637,14 +461,10 @@ func TestSeedHistory(t *testing.T) {
 		seedProject(t, base, "src", "")
 		seedProject(t, base, "dst", "{\"stale\":true}\n")
 
-		err := SeedHistory(base, "dst", "src")
-		if !errors.Is(err, ErrNoHistory) {
-			t.Fatalf("SeedHistory error = %v, want ErrNoHistory", err)
-		}
+		require.ErrorIs(t, SeedHistory(base, "dst", "src"), ErrNoHistory)
 
-		if _, err := os.Stat(HistoryFile(base, "dst")); !errors.Is(err, os.ErrNotExist) {
-			t.Errorf("target history survived an empty source (stat err = %v)", err)
-		}
+		_, err := os.Stat(HistoryFile(base, "dst"))
+		assert.ErrorIs(t, err, os.ErrNotExist, "target history survived an empty source")
 	})
 
 	t.Run("neither project has history and it still reports ErrNoHistory", func(t *testing.T) {
@@ -652,10 +472,7 @@ func TestSeedHistory(t *testing.T) {
 		seedProject(t, base, "src", "")
 		seedProject(t, base, "dst", "")
 
-		err := SeedHistory(base, "dst", "src")
-		if !errors.Is(err, ErrNoHistory) {
-			t.Fatalf("SeedHistory error = %v, want ErrNoHistory", err)
-		}
+		assert.ErrorIs(t, SeedHistory(base, "dst", "src"), ErrNoHistory)
 	})
 
 	t.Run("missing target project reports fs.ErrNotExist, not ErrNoHistory", func(t *testing.T) {
@@ -666,14 +483,8 @@ func TestSeedHistory(t *testing.T) {
 			seedProject(t, base, srcID, sourceHistory)
 
 			err := SeedHistory(base, "nosuch", srcID)
-			if !errors.Is(err, os.ErrNotExist) {
-				t.Errorf("source history %q: error = %v, want it to wrap fs.ErrNotExist",
-					sourceHistory, err)
-			}
-			if errors.Is(err, ErrNoHistory) {
-				t.Errorf("source history %q: error = %v, want the missing target reported instead",
-					sourceHistory, err)
-			}
+			assert.ErrorIs(t, err, os.ErrNotExist, "source history %q", sourceHistory)
+			assert.NotErrorIs(t, err, ErrNoHistory, "source history %q", sourceHistory)
 		}
 	})
 
@@ -681,10 +492,7 @@ func TestSeedHistory(t *testing.T) {
 		base := t.TempDir()
 		seedProject(t, base, "dst", "")
 
-		err := SeedHistory(base, "dst", "nosuch")
-		if !errors.Is(err, ErrNoHistory) {
-			t.Fatalf("SeedHistory error = %v, want ErrNoHistory", err)
-		}
+		assert.ErrorIs(t, SeedHistory(base, "dst", "nosuch"), ErrNoHistory)
 	})
 
 	t.Run("leaves no staging file behind", func(t *testing.T) {
@@ -694,35 +502,20 @@ func TestSeedHistory(t *testing.T) {
 
 		before := projectFiles(t, base, "dst")
 
-		if err := SeedHistory(base, "dst", "src"); err != nil {
-			t.Fatalf("SeedHistory returned unexpected error: %v", err)
-		}
+		require.NoError(t, SeedHistory(base, "dst", "src"))
 
-		want := append(slices.Clone(before), "history.jsonl")
-		slices.Sort(want)
-		got := projectFiles(t, base, "dst")
-		slices.Sort(got)
-		if !slices.Equal(got, want) {
-			t.Errorf("project directory holds %v, want %v", got, want)
-		}
+		assert.ElementsMatch(t, append(slices.Clone(before), "history.jsonl"), projectFiles(t, base, "dst"))
 	})
 
 	t.Run("refuses to seed a project from itself", func(t *testing.T) {
 		base := t.TempDir()
 		seedProject(t, base, "dst", "{\"own\":true}\n")
 
-		err := SeedHistory(base, "dst", "dst")
+		require.ErrorIs(t, SeedHistory(base, "dst", "dst"), ErrCopyToSelf)
 
-		if !errors.Is(err, ErrCopyToSelf) {
-			t.Fatalf("SeedHistory returned %v, want ErrCopyToSelf", err)
-		}
-		got, readErr := os.ReadFile(HistoryFile(base, "dst"))
-		if readErr != nil {
-			t.Fatalf("the refusal touched the history file: %v", readErr)
-		}
-		if string(got) != "{\"own\":true}\n" {
-			t.Errorf("history = %q, want it untouched", got)
-		}
+		got, err := os.ReadFile(HistoryFile(base, "dst"))
+		require.NoError(t, err, "the refusal touched the history file")
+		assert.Equal(t, "{\"own\":true}\n", string(got))
 	})
 
 	t.Run("leaves no staging file behind when the rename fails", func(t *testing.T) {
@@ -731,23 +524,13 @@ func TestSeedHistory(t *testing.T) {
 		seedProject(t, base, "dst", "")
 
 		blocker := HistoryFile(base, "dst")
-		if err := os.MkdirAll(filepath.Join(blocker, "occupied"), 0o755); err != nil {
-			t.Fatalf("failed to block the destination: %v", err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Join(blocker, "occupied"), 0o755))
 
 		before := projectFiles(t, base, "dst")
 
-		if err := SeedHistory(base, "dst", "src"); err == nil {
-			t.Fatal("SeedHistory returned nil, want the rename to fail")
-		}
+		require.Error(t, SeedHistory(base, "dst", "src"), "want the rename to fail")
 
-		want := slices.Clone(before)
-		slices.Sort(want)
-		got := projectFiles(t, base, "dst")
-		slices.Sort(got)
-		if !slices.Equal(got, want) {
-			t.Errorf("project directory holds %v, want %v", got, want)
-		}
+		assert.ElementsMatch(t, before, projectFiles(t, base, "dst"))
 	})
 
 	t.Run("rejects invalid IDs without touching the filesystem", func(t *testing.T) {
@@ -770,25 +553,14 @@ func TestSeedHistory(t *testing.T) {
 				seedProject(t, base, "dst", "{\"stale\":true}\n")
 
 				err := SeedHistory(base, tt.target, tt.from)
-				if err == nil {
-					t.Fatalf("SeedHistory(%q, %q) = nil, want a validation error",
-						tt.target, tt.from)
-				}
-				if errors.Is(err, ErrNoHistory) {
-					t.Errorf("error = %v, want a validation error rather than ErrNoHistory", err)
-				}
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, ErrNoHistory)
 
-				if _, err := os.Stat(outside); !errors.Is(err, os.ErrNotExist) {
-					t.Errorf("something was written outside baseDir at %q (stat err = %v)",
-						outside, err)
-				}
+				_, err = os.Stat(outside)
+				assert.ErrorIs(t, err, os.ErrNotExist, "something was written outside baseDir")
 				got, err := os.ReadFile(HistoryFile(base, "dst"))
-				if err != nil {
-					t.Fatalf("reading the target history: %v", err)
-				}
-				if string(got) != "{\"stale\":true}\n" {
-					t.Errorf("target history = %q, want it untouched by a rejected call", got)
-				}
+				require.NoError(t, err)
+				assert.Equal(t, "{\"stale\":true}\n", string(got))
 			})
 		}
 	})
