@@ -79,6 +79,10 @@ const (
 	// it every build would fail with "JavaScript heap out of memory", so a
 	// smaller value is read as a mistake - most likely the unit taken for GB.
 	minBuildHeapMB = 256
+
+	// minJWTSecretBytes is the shortest JWT_SECRET_KEY accepted: HS256 wants a
+	// key at least as long as its 256-bit hash.
+	minJWTSecretBytes = 32
 )
 
 // Load reads configuration from environment variables, applying the defaults
@@ -92,6 +96,12 @@ const (
 // can fix them all from the message alone. A value that fails to parse is
 // reported without the range checks, which would only add noise about a
 // field left at zero.
+//
+// With SecurityEnable on, Load also requires what auth cannot run without:
+// the admin's name and password, a JWTSecretKey of at least minJWTSecretBytes,
+// and either a whole viewer or none, named apart from the admin. A missing or
+// too short secret is reported as KEY: ... without its value, so no password
+// or signing key reaches the log.
 func Load() (Config, error) {
 	cfg, err := env.ParseAs[Config]()
 	if err != nil {
@@ -112,6 +122,36 @@ func Load() (Config, error) {
 			"BUILD_HEAP_MB",
 			fmt.Sprintf("0 (left to Node) or at least %d", minBuildHeapMB),
 		))
+	}
+	if cfg.AccessTokenTTL <= 0 {
+		errs = append(errs, invalidEnv("ACCESS_TOKEN_TTL", "a positive duration"))
+	}
+	if cfg.RefreshTokenTTL <= 0 {
+		errs = append(errs, invalidEnv("REFRESH_TOKEN_TTL", "a positive duration"))
+	}
+
+	if cfg.SecurityEnable {
+		if cfg.SecurityUser == "" {
+			errs = append(errs, requiredEnv("SECURITY_USER"))
+		}
+		if cfg.SecurityPass == "" {
+			errs = append(errs, requiredEnv("SECURITY_PASS"))
+		}
+		switch {
+		case cfg.JWTSecretKey == "":
+			errs = append(errs, requiredEnv("JWT_SECRET_KEY"))
+		case len(cfg.JWTSecretKey) < minJWTSecretBytes:
+			errs = append(errs, fmt.Errorf("JWT_SECRET_KEY: want at least %d bytes", minJWTSecretBytes))
+		}
+		if cfg.SecurityViewerUser != "" && cfg.SecurityViewerPass == "" {
+			errs = append(errs, errors.New("SECURITY_VIEWER_PASS: required with SECURITY_VIEWER_USER"))
+		}
+		if cfg.SecurityViewerPass != "" && cfg.SecurityViewerUser == "" {
+			errs = append(errs, errors.New("SECURITY_VIEWER_USER: required with SECURITY_VIEWER_PASS"))
+		}
+		if cfg.SecurityViewerUser != "" && cfg.SecurityViewerUser == cfg.SecurityUser {
+			errs = append(errs, invalidEnv("SECURITY_VIEWER_USER", "a name other than SECURITY_USER"))
+		}
 	}
 	if err := errors.Join(errs...); err != nil {
 		return Config{}, err
@@ -147,4 +187,11 @@ func describeParseErrors(err error) error {
 // cannot use, quoting the value as set and saying what was expected.
 func invalidEnv(key, want string) error {
 	return fmt.Errorf("%s=%q: want %s", key, os.Getenv(key), want)
+}
+
+// requiredEnv reports that the environment variable key must be set when auth
+// is on. Unlike invalidEnv it never quotes the value: the key may hold a
+// password or the signing key, and the error ends up in the log.
+func requiredEnv(key string) error {
+	return fmt.Errorf("%s: required with SECURITY_ENABLED", key)
 }
