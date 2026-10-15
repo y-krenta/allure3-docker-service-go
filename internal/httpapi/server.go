@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
@@ -69,6 +70,8 @@ type Server struct {
 	reports     reportGenerator
 	cfg         RuntimeConfig
 	versions    Versions
+	users       *auth.Users
+	tokens      *auth.Tokens
 }
 
 // Versions carries the two version strings the meta endpoints report. It
@@ -94,4 +97,14 @@ type Versions struct {
 // the life of the process.
 func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig, versions Versions) *Server {
 	return &Server{projectsDir: projectsDir, reports: reports, cfg: cfg, versions: versions}
+}
+
+// EnableAuth turns on password login: users are who may log in and with what
+// role, tokens what signs the tokens they get. main calls it before Routes
+// when SECURITY_ENABLED is set; a Server it is never called on runs without
+// auth. It is a method rather than a NewServer parameter so that the many
+// servers built without auth stay as they are.
+func (s *Server) EnableAuth(users *auth.Users, tokens *auth.Tokens) {
+	s.users = users
+	s.tokens = tokens
 }

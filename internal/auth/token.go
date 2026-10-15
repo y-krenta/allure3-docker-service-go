@@ -103,3 +103,7 @@ func (t *Tokens) Parse(raw string, want TokenType) (Claims, error) {
 	}
 	return c, nil
 }
+
+// AccessTTL is how long an access token lives, for clients that are told when
+// to renew it.
+func (t *Tokens) AccessTTL() time.Duration { return t.accessTTL }
