@@ -69,6 +69,18 @@ func TestCheckRejectsBadCredentials(t *testing.T) {
 	}
 }
 
+// TestAddHashesAtDefaultCost checks that a plain-text password is hashed at
+// bcrypt.DefaultCost: every step below it makes a stolen hash twice as fast to
+// brute-force, and nothing else would notice.
+func TestAddHashesAtDefaultCost(t *testing.T) {
+	users := newTestUsers(t)
+	require.NoError(t, users.Add("admin", "admin-pass", RoleAdmin))
+
+	cost, err := bcrypt.Cost(users.byName["admin"].hash)
+	require.NoError(t, err)
+	assert.Equal(t, bcrypt.DefaultCost, cost)
+}
+
 // TestCheckTakesAsLongForAnUnknownUser checks that a login with an unknown
 // name costs a bcrypt comparison too. Without one it answers in microseconds
 // instead of tens of milliseconds, and the response time tells an attacker
