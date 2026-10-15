@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetConfig(t *testing.T) {
@@ -24,37 +27,16 @@ func TestGetConfig(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.getConfig(w, httptest.NewRequest(http.MethodGet, "/config", nil))
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-		}
-		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-			t.Errorf("Content-Type = %q, want application/json", ct)
-		}
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 
 		var got map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decoding body %q: %v", w.Body.String(), err)
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
 
-		keys := make([]string, 0, len(got))
-		for k := range got {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		if !slices.Equal(keys, wantKeys) {
-			t.Errorf("keys = %v, want %v", keys, wantKeys)
-		}
-
-		if got["keep_history"] != true {
-			t.Errorf("keep_history = %v, want true", got["keep_history"])
-		}
-
-		if got["keep_history_latest"] != float64(60) {
-			t.Errorf("keep_history_latest = %v, want 60", got["keep_history_latest"])
-		}
-		if got["check_results_every_seconds"] != float64(30) {
-			t.Errorf("check_results_every_seconds = %v, want 30", got["check_results_every_seconds"])
-		}
+		assert.ElementsMatch(t, wantKeys, slices.Collect(maps.Keys(got)))
+		assert.Equal(t, true, got["keep_history"])
+		assert.Equal(t, float64(60), got["keep_history_latest"])
+		assert.Equal(t, float64(30), got["check_results_every_seconds"])
 	})
 
 	t.Run("zero values are published, not omitted", func(t *testing.T) {
@@ -65,14 +47,10 @@ func TestGetConfig(t *testing.T) {
 		s.getConfig(w, httptest.NewRequest(http.MethodGet, "/config", nil))
 
 		var got map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decoding body %q: %v", w.Body.String(), err)
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
 
 		for _, k := range wantKeys {
-			if _, ok := got[k]; !ok {
-				t.Errorf("key %q missing from %s", k, w.Body.String())
-			}
+			assert.Contains(t, got, k, w.Body.String())
 		}
 	})
 
@@ -83,16 +61,10 @@ func TestGetConfig(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config", nil))
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body %q)", w.Code, http.StatusOK, w.Body.String())
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 		var got map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decoding body %q: %v", w.Body.String(), err)
-		}
-		if got["keep_history_latest"] != float64(7) {
-			t.Errorf("keep_history_latest = %v, want 7", got["keep_history_latest"])
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
+		assert.Equal(t, float64(7), got["keep_history_latest"])
 	})
 }
 
@@ -110,33 +82,15 @@ func TestGetVersion(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.getVersion(w, httptest.NewRequest(http.MethodGet, "/version", nil))
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
-		}
-		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
-			t.Errorf("Content-Type = %q, want application/json", ct)
-		}
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 
 		var got map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decoding body %q: %v", w.Body.String(), err)
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
 
-		keys := make([]string, 0, len(got))
-		for k := range got {
-			keys = append(keys, k)
-		}
-		slices.Sort(keys)
-		if want := []string{"allure_version", "service_version"}; !slices.Equal(keys, want) {
-			t.Errorf("keys = %v, want %v", keys, want)
-		}
-
-		if got["allure_version"] != allureVersion {
-			t.Errorf("allure_version = %v, want %v", got["allure_version"], allureVersion)
-		}
-		if got["service_version"] != serviceVersion {
-			t.Errorf("service_version = %v, want %v", got["service_version"], serviceVersion)
-		}
+		assert.ElementsMatch(t, []string{"allure_version", "service_version"}, slices.Collect(maps.Keys(got)))
+		assert.Equal(t, allureVersion, got["allure_version"])
+		assert.Equal(t, serviceVersion, got["service_version"])
 	})
 
 	t.Run("empty versions are published, not omitted", func(t *testing.T) {
@@ -146,9 +100,7 @@ func TestGetVersion(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.getVersion(w, httptest.NewRequest(http.MethodGet, "/version", nil))
 
-		if got := strings.TrimSpace(w.Body.String()); got != `{"allure_version":"","service_version":""}` {
-			t.Errorf("body = %s, want both keys with empty values", got)
-		}
+		assert.JSONEq(t, `{"allure_version":"","service_version":""}`, w.Body.String())
 	})
 
 	t.Run("the route is registered", func(t *testing.T) {
@@ -158,12 +110,7 @@ func TestGetVersion(t *testing.T) {
 		w := httptest.NewRecorder()
 		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body %q)", w.Code, http.StatusOK, w.Body.String())
-		}
-		want := `{"allure_version":"3.14.3","service_version":"0.0.2-test"}`
-		if got := strings.TrimSpace(w.Body.String()); got != want {
-			t.Errorf("body = %s, want %s", got, want)
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.JSONEq(t, `{"allure_version":"3.14.3","service_version":"0.0.2-test"}`, w.Body.String())
 	})
 }

@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 var (
@@ -201,26 +203,18 @@ func (c *client) do(req *http.Request, want int) (*http.Response, []byte) {
 	c.t.Helper()
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		c.t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
-	}
+	require.NoError(c.t, err, "%s %s", req.Method, req.URL.Path)
 	defer func() { _ = resp.Body.Close() }()
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.t.Fatalf("%s %s: reading body: %v", req.Method, req.URL.Path, err)
-	}
-	if resp.StatusCode != want {
-		c.t.Fatalf("%s %s = %d, want %d\n%s", req.Method, req.URL.Path, resp.StatusCode, want, body)
-	}
+	require.NoError(c.t, err, "%s %s: reading body", req.Method, req.URL.Path)
+	require.Equal(c.t, want, resp.StatusCode, "%s %s\n%s", req.Method, req.URL.Path, body)
 	return resp, body
 }
 
 func (c *client) request(method, path string, body io.Reader) *http.Request {
 	c.t.Helper()
 	req, err := http.NewRequestWithContext(c.t.Context(), method, c.base+path, body)
-	if err != nil {
-		c.t.Fatalf("building %s %s: %v", method, path, err)
-	}
+	require.NoError(c.t, err)
 	return req
 }
 
@@ -232,9 +226,7 @@ func (c *client) get(path string) (*http.Response, []byte) {
 func (c *client) getJSON(path string, v any) {
 	c.t.Helper()
 	_, body := c.get(path)
-	if err := json.Unmarshal(body, v); err != nil {
-		c.t.Fatalf("GET %s: body is not the expected JSON: %v\n%s", path, err, body)
-	}
+	require.NoError(c.t, json.Unmarshal(body, v), "GET %s: body is not the expected JSON\n%s", path, body)
 }
 
 func (c *client) createProject(id string) {
@@ -257,16 +249,11 @@ func (c *client) upload(id string, results ...result) {
 	mw := multipart.NewWriter(&buf)
 	for _, r := range results {
 		fw, err := mw.CreateFormFile("files[]", r.uuid+"-result.json")
-		if err != nil {
-			c.t.Fatalf("building upload: %v", err)
-		}
-		if _, err := fw.Write(r.json()); err != nil {
-			c.t.Fatalf("building upload: %v", err)
-		}
+		require.NoError(c.t, err)
+		_, err = fw.Write(r.json())
+		require.NoError(c.t, err)
 	}
-	if err := mw.Close(); err != nil {
-		c.t.Fatalf("building upload: %v", err)
-	}
+	require.NoError(c.t, mw.Close())
 
 	req := c.request(http.MethodPost, "/projects/"+id+"/results", &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
@@ -275,12 +262,8 @@ func (c *client) upload(id string, results ...result) {
 	var resp struct {
 		Count int `json:"processed_files_count"`
 	}
-	if err := json.Unmarshal(body, &resp); err != nil {
-		c.t.Fatalf("upload answer is not the expected JSON: %v\n%s", err, body)
-	}
-	if resp.Count != len(results) {
-		c.t.Fatalf("upload processed %d files, want %d\n%s", resp.Count, len(results), body)
-	}
+	require.NoError(c.t, json.Unmarshal(body, &resp), "upload answer is not the expected JSON\n%s", body)
+	require.Equal(c.t, len(results), resp.Count, "processed files\n%s", body)
 }
 
 func (c *client) startGeneration(id string) {
@@ -314,7 +297,7 @@ func (c *client) waitForBuild(id string) generation {
 		}
 		select {
 		case <-ctx.Done():
-			c.t.Fatalf("build of %s still running after 2 minutes", id)
+			require.FailNow(c.t, "build still running after 2 minutes", id)
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -322,9 +305,8 @@ func (c *client) waitForBuild(id string) generation {
 
 func (c *client) requireSucceeded(id string) {
 	c.t.Helper()
-	if st := c.waitForBuild(id); st.State != "succeeded" {
-		c.t.Fatalf("build of %s = %q, want succeeded\n%s", id, st.State, st.Error)
-	}
+	st := c.waitForBuild(id)
+	require.Equal(c.t, "succeeded", st.State, "build of %s\n%s", id, st.Error)
 }
 
 type result struct {

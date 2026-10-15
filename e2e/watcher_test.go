@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"slices"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWatcherBuildsUploadedResults(t *testing.T) {
@@ -30,9 +32,7 @@ func TestWatcherBuildsUploadedResults(t *testing.T) {
 		Builds []string `json:"builds"`
 	}
 	c.getJSON("/projects/"+id, &builds)
-	if !slices.Contains(builds.Builds, "1") {
-		t.Errorf("project lists builds %v, want the first run archived as 1", builds.Builds)
-	}
+	assert.Contains(t, builds.Builds, "1", "want the first run archived as 1")
 }
 
 func (c *client) waitForReport(id string, total, passed, failed int) {
@@ -49,8 +49,8 @@ func (c *client) waitForReport(id string, total, passed, failed int) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	c.t.Fatalf("watcher built no report of %d passed, %d failed for %s within a minute; last seen %+v",
-		passed, failed, id, last.Stats)
+	require.FailNow(c.t, "watcher built no matching report within a minute",
+		"%s: want %d passed, %d failed; last seen %+v", id, passed, failed, last.Stats)
 }
 
 func (c *client) latestSummary(id string) (summary, bool) {
@@ -58,23 +58,15 @@ func (c *client) latestSummary(id string) (summary, bool) {
 
 	req := c.request(http.MethodGet, "/projects/"+id+"/reports/latest/summary.json", nil)
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		c.t.Fatalf("GET %s: %v", req.URL.Path, err)
-	}
+	require.NoError(c.t, err, "GET %s", req.URL.Path)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return summary{}, false
 	}
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		c.t.Fatalf("GET %s: reading body: %v", req.URL.Path, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		c.t.Fatalf("GET %s = %d, want 200 or 404\n%s", req.URL.Path, resp.StatusCode, body)
-	}
+	require.NoError(c.t, err, "GET %s: reading body", req.URL.Path)
+	require.Equal(c.t, http.StatusOK, resp.StatusCode, "GET %s, want 200 or 404\n%s", req.URL.Path, body)
 	var sum summary
-	if err := json.Unmarshal(body, &sum); err != nil {
-		c.t.Fatalf("GET %s: body is not the expected JSON: %v\n%s", req.URL.Path, err, body)
-	}
+	require.NoError(c.t, json.Unmarshal(body, &sum), "GET %s: body is not the expected JSON\n%s", req.URL.Path, body)
 	return sum, true
 }

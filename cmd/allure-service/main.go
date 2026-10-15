@@ -51,7 +51,11 @@ const shutdownTimeout = 25 * time.Second
 var serviceVersion = "dev"
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("invalid configuration:\n%v", err)
+	}
+	checkInterval := time.Duration(cfg.CheckResultsEverySeconds) * time.Second
 	if cfg.SecurityEnable {
 		log.Fatal("SECURITY_ENABLED is not supported")
 	}
@@ -121,13 +125,18 @@ func main() {
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		watcher.Run(watchCtx, cfg.ProjectsDir, cfg.CheckResultsInterval, reports.Start)
+		watcher.Run(
+			watchCtx,
+			cfg.ProjectsDir,
+			checkInterval,
+			reports.Start,
+		)
 	}()
 
 	s := httpapi.NewServer(cfg.ProjectsDir, reports, httpapi.RuntimeConfig{
 		KeepHistory:       cfg.KeepHistory,
 		KeepHistoryLatest: cfg.KeepHistoryLatest,
-		CheckResultsEvery: cfg.CheckResultsInterval,
+		CheckResultsEvery: checkInterval,
 	}, httpapi.Versions{Allure: allureVersion, Service: serviceVersion})
 
 	srv := &http.Server{

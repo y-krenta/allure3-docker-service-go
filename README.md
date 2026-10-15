@@ -178,7 +178,13 @@ Allure-js 3.9+ also writes the old id as a `_fallbackTestCaseId` label. Allure 3
 
 ## Configuration
 
-All configuration is environment variables; invalid values fall back to the default with a warning in the log.
+All configuration is environment variables. A value the service cannot use — one that does not parse, or one out of range — stops it at startup, and the log names every bad variable at once:
+
+```
+invalid configuration:
+MAX_CONCURRENT_BUILDS="0": want 1 or more
+BUILD_HEAP_MB="100": want 0 (left to Node) or at least 256
+```
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -187,10 +193,10 @@ All configuration is environment variables; invalid values fall back to the defa
 | `STATIC_CONTENT_PROJECTS` | `/app/projects` | Projects root on disk. Must be set when running outside the container |
 | `ALLURE_BIN` | `allure` | Allure CLI name or path; a bare name is looked up in `PATH` |
 | `KEEP_HISTORY` | `true` | Accumulate run history between builds. `false` means **erase**: the history limit collapses to `0` and `history.jsonl` is truncated on every build |
-| `KEEP_HISTORY_LATEST` | `60` | How many past runs to keep — the same number of points in the trend chart, and the same number of archived reports |
-| `CHECK_RESULTS_EVERY_SECONDS` | `0` | Watcher interval. `0` disables it; reports are then built only via the API |
-| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. More are accepted and wait for a free slot, reading `running` meanwhile. `0` means `1`; a negative value is rejected with a warning in the log and the default is used. See [Resource limits](#resource-limits) |
-| `BUILD_HEAP_MB` | `2048` | V8 old-space cap of one build, in MiB (`--max-old-space-size`) — enough for ~10 000 tests with 60 runs of history. `0` leaves it to Node; `1`–`255` is taken for a mistake, warned about in the log, and replaced by the default. See [Resource limits](#resource-limits) |
+| `KEEP_HISTORY_LATEST` | `60` | How many past runs to keep — the same number of points in the trend chart, and the same number of archived reports. `0` or more |
+| `CHECK_RESULTS_EVERY_SECONDS` | `0` | Watcher interval, in whole seconds (`30`, not `30s`). `0` disables it; reports are then built only via the API |
+| `MAX_CONCURRENT_BUILDS` | `4` | Builds running at once across all projects. More are accepted and wait for a free slot, reading `running` meanwhile. `1` or more. See [Resource limits](#resource-limits) |
+| `BUILD_HEAP_MB` | `2048` | V8 old-space cap of one build, in MiB (`--max-old-space-size`) — enough for ~10 000 tests with 60 runs of history. `0` leaves it to Node; otherwise at least `256` — a smaller value is most likely meant in GB and would fail every build out of heap. See [Resource limits](#resource-limits) |
 
 The effective limits are printed at startup as `history limit N, max concurrent builds K, build heap H MB`.
 
