@@ -58,8 +58,8 @@ func TestLoginIssuesTokens(t *testing.T) {
 			w := postLogin(s, fmt.Sprintf(`{"username":%q,"password":%q}`, tt.user, tt.password))
 
 			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-			assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
-			assert.Equal(t, "no-store", w.Header().Get("Cache-Control"))
+			assert.Equal(t, "application/json", w.Result().Header.Get("Content-Type"))
+			assert.Equal(t, "no-store", w.Result().Header.Get("Cache-Control"))
 
 			var resp loginResponse
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
@@ -94,7 +94,7 @@ func TestLoginRejectsBadCredentials(t *testing.T) {
 		w := postLogin(s, body)
 
 		assert.Equal(t, http.StatusUnauthorized, w.Code, body)
-		assert.Equal(t, "application/json", w.Header().Get("Content-Type"), body)
+		assert.Equal(t, "application/json", w.Result().Header.Get("Content-Type"), body)
 		var resp struct {
 			Error string `json:"error"`
 		}
