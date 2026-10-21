@@ -15,6 +15,7 @@ const (
 	healthEndpoint   = "/health"
 	configEndpoint   = "/config"
 	versionEndpoint  = "/version"
+	loginEndpoint    = "/auth/login"
 )
 
 // Routes builds the HTTP handler for the whole service: it registers every
@@ -27,6 +28,10 @@ const (
 //   - CleanPath routes on the cleaned path, so "//projects" still matches;
 //   - GetHead answers HEAD on GET routes. It must come after CleanPath, which
 //     skips cleaning once GetHead has set the route path.
+//
+// The login route exists only on a Server that EnableAuth was called on.
+// Without auth it answers 404 like any unknown path, rather than reaching a
+// handler with no users to check against.
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(
@@ -57,6 +62,10 @@ func (s *Server) Routes() http.Handler {
 
 	r.Delete(projectsEndpoint+"/{id}", s.deleteProject)
 	r.Delete(projectsEndpoint+"/{id}/results", s.clearResults)
+
+	if s.users != nil {
+		r.Post(loginEndpoint, s.login)
+	}
 	return r
 }
 

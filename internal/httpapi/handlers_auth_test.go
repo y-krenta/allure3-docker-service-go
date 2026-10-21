@@ -132,3 +132,28 @@ func TestLoginRejectsUnreadableBodies(t *testing.T) {
 		})
 	}
 }
+
+// TestLoginIsRoutedOnlyWithAuth checks that the router serves POST /auth/login
+// once EnableAuth has been called, and without it answers 404 instead of
+// reaching a handler that has no users to check against.
+func TestLoginIsRoutedOnlyWithAuth(t *testing.T) {
+	body := `{"username":"admin","password":"admin-pass"}`
+
+	t.Run("enabled", func(t *testing.T) {
+		s, _ := newAuthServer(t)
+		w := httptest.NewRecorder()
+
+		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body)))
+
+		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		s, _ := newTestServer(t)
+		w := httptest.NewRecorder()
+
+		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body)))
+
+		assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	})
+}
