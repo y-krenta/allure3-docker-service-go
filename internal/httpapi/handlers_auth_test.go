@@ -171,9 +171,10 @@ func TestLoginIsRoutedOnlyWithAuth(t *testing.T) {
 }
 
 // TestLoginRequiresJSON checks that the right name and password are refused
-// with 415 unless the body is declared as JSON, with a charset or without:
-// another site's form can post the same bytes as text/plain with no CORS
-// preflight, and would log the visitor in as whoever the attacker chose.
+// with 415 and no token unless the body is declared as JSON, with a charset or
+// without, in a header that parses: another site's form can post the same
+// bytes as text/plain with no CORS preflight, and would log the visitor in as
+// whoever the attacker chose.
 func TestLoginRequiresJSON(t *testing.T) {
 	s, _ := newAuthServer(t)
 	body := `{"username":"admin","password":"admin-pass"}`
@@ -187,6 +188,7 @@ func TestLoginRequiresJSON(t *testing.T) {
 		{"text/plain", http.StatusUnsupportedMediaType},
 		{"application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
 		{"multipart/form-data; boundary=x", http.StatusUnsupportedMediaType},
+		{"application/json; charset", http.StatusUnsupportedMediaType},
 		{"", http.StatusUnsupportedMediaType},
 	}
 
@@ -195,6 +197,9 @@ func TestLoginRequiresJSON(t *testing.T) {
 			w := postLoginAs(s, tt.contentType, body)
 
 			assert.Equal(t, tt.want, w.Code, w.Body.String())
+			if tt.want != http.StatusOK {
+				assert.NotContains(t, w.Body.String(), "token")
+			}
 		})
 	}
 }
