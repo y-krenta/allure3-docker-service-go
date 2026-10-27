@@ -34,16 +34,24 @@ func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 	return s, tokens
 }
 
-func postLogin(s *Server, body string) *httptest.ResponseRecorder {
-	return postLoginAs(s, "application/json", body)
-}
-
-func postLoginAs(s *Server, contentType, body string) *httptest.ResponseRecorder {
-	r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+func postAs(h http.HandlerFunc, contentType, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
 	r.Header.Set("Content-Type", contentType)
 	w := httptest.NewRecorder()
-	s.login(w, r)
+	h(w, r)
 	return w
+}
+
+func postLogin(s *Server, body string) *httptest.ResponseRecorder {
+	return postAs(s.login, "application/json", body)
+}
+
+func postRefresh(s *Server, body string) *httptest.ResponseRecorder {
+	return postAs(s.refresh, "application/json", body)
+}
+
+func refreshBody(token string) string {
+	return fmt.Sprintf(`{"refresh_token":%q}`, token)
 }
 
 type loginResponse struct {
@@ -149,33 +157,45 @@ func TestLoginRejectsUnreadableBodies(t *testing.T) {
 	}
 }
 
-// TestLoginIsRoutedOnlyWithAuth checks that the router serves POST /auth/login
-// once EnableAuth has been called, and without it answers 404 instead of
-// reaching a handler that has no users to check against.
-func TestLoginIsRoutedOnlyWithAuth(t *testing.T) {
-	body := `{"username":"admin","password":"admin-pass"}`
+// TestAuthIsRoutedOnlyWithAuth checks that the router serves POST /auth/login
+// and POST /auth/refresh once EnableAuth has been called, and without it
+// answers 404 instead of reaching a handler that has no users to check
+// against.
+func TestAuthIsRoutedOnlyWithAuth(t *testing.T) {
+	enabled, tokens := newAuthServer(t)
+	disabled, _ := newTestServer(t)
+	refresh, err := tokens.Issue("admin", auth.RoleAdmin, auth.Refresh)
+	require.NoError(t, err)
 
-	t.Run("enabled", func(t *testing.T) {
-		s, _ := newAuthServer(t)
-		w := httptest.NewRecorder()
+	routes := []struct {
+		target string
+		body   string
+	}{
+		{"/auth/login", `{"username":"admin","password":"admin-pass"}`},
+		{"/auth/refresh", refreshBody(refresh)},
+	}
+	servers := []struct {
+		name string
+		s    *Server
+		want int
+	}{
+		{"enabled", enabled, http.StatusOK},
+		{"disabled", disabled, http.StatusNotFound},
+	}
 
-		r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
-		r.Header.Set("Content-Type", "application/json")
-		s.Routes().ServeHTTP(w, r)
+	for _, rt := range routes {
+		for _, srv := range servers {
+			t.Run(srv.name+" "+rt.target, func(t *testing.T) {
+				r := httptest.NewRequest(http.MethodPost, rt.target, strings.NewReader(rt.body))
+				r.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
 
-		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	})
+				srv.s.Routes().ServeHTTP(w, r)
 
-	t.Run("disabled", func(t *testing.T) {
-		s, _ := newTestServer(t)
-		w := httptest.NewRecorder()
-
-		r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
-		r.Header.Set("Content-Type", "application/json")
-		s.Routes().ServeHTTP(w, r)
-
-		assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
-	})
+				assert.Equal(t, srv.want, w.Code, w.Body.String())
+			})
+		}
+	}
 }
 
 // TestLoginRequiresJSON checks that the right name and password are refused
@@ -202,7 +222,7 @@ func TestLoginRequiresJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.contentType, func(t *testing.T) {
-			w := postLoginAs(s, tt.contentType, body)
+			w := postAs(s.login, tt.contentType, body)
 
 			assert.Equal(t, tt.want, w.Code, w.Body.String())
 			if tt.want != http.StatusOK {
@@ -297,6 +317,7 @@ func TestRoutesRequireRoles(t *testing.T) {
 	routes := map[string]string{
 		"GET /health":                       public,
 		"POST /auth/login":                  public,
+		"POST /auth/refresh":                public,
 		"GET /projects":                     read,
 		"GET /config":                       read,
 		"GET /version":                      read,
@@ -369,6 +390,127 @@ func TestRoutesRequireRoles(t *testing.T) {
 					})
 				}
 			}
+		})
+	}
+}
+
+// TestRefreshIssuesAccessToken checks that a valid refresh token gets a new
+// access token for its user, with the role that user is configured with now
+// rather than the one the token was issued with, the access token's lifetime
+// in seconds, no new refresh token, and a response no cache may keep.
+func TestRefreshIssuesAccessToken(t *testing.T) {
+	tests := []struct {
+		name     string
+		user     string
+		issuedAs auth.Role
+		want     auth.Role
+	}{
+		{"admin", "admin", auth.RoleAdmin, auth.RoleAdmin},
+		{"viewer", "viewer", auth.RoleViewer, auth.RoleViewer},
+		{"role changed since", "viewer", auth.RoleAdmin, auth.RoleViewer},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, tokens := newAuthServer(t)
+			refresh, err := tokens.Issue(tt.user, tt.issuedAs, auth.Refresh)
+			require.NoError(t, err)
+
+			w := postRefresh(s, refreshBody(refresh))
+
+			require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+			assert.Equal(t, "application/json", w.Result().Header.Get("Content-Type"))
+			assert.Equal(t, "no-store", w.Result().Header.Get("Cache-Control"))
+
+			var keys map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &keys), w.Body.String())
+			assert.ElementsMatch(t, []string{"access_token", "expires_in"}, slices.Collect(maps.Keys(keys)))
+
+			var resp loginResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
+			assert.Equal(t, 900, resp.ExpiresIn)
+
+			access, err := tokens.Parse(resp.AccessToken, auth.Access)
+			require.NoError(t, err)
+			assert.Equal(t, tt.user, access.Subject)
+			assert.Equal(t, tt.want, access.Role)
+		})
+	}
+}
+
+// TestRefreshRejectsBadTokens checks that anything but a valid refresh token
+// of a user still configured - an access token, an expired or forged one, a
+// removed user's, none at all - gets the same 401 with a JSON error and no
+// access token, so the answer does not tell which check failed.
+func TestRefreshRejectsBadTokens(t *testing.T) {
+	s, tokens := newAuthServer(t)
+	expired := auth.NewTokens([]byte(testSecret), 15*time.Minute, -time.Minute)
+	foreign := auth.NewTokens([]byte("fedcba9876543210fedcba9876543210"), 15*time.Minute, 720*time.Hour)
+
+	issue := func(tk *auth.Tokens, user string, typ auth.TokenType) string {
+		raw, err := tk.Issue(user, auth.RoleAdmin, typ)
+		require.NoError(t, err)
+		return raw
+	}
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"access token", refreshBody(issue(tokens, "admin", auth.Access))},
+		{"expired", refreshBody(issue(expired, "admin", auth.Refresh))},
+		{"signed with another key", refreshBody(issue(foreign, "admin", auth.Refresh))},
+		{"removed user", refreshBody(issue(tokens, "ghost", auth.Refresh))},
+		{"not a token", refreshBody("not-a-jwt")},
+		{"no token", `{}`},
+	}
+
+	var answers []string
+	for _, tt := range tests {
+		w := postRefresh(s, tt.body)
+
+		assert.Equal(t, http.StatusUnauthorized, w.Code, tt.name)
+		assert.Equal(t, "application/json", w.Result().Header.Get("Content-Type"), tt.name)
+		var resp struct {
+			Error string `json:"error"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
+		assert.NotEmpty(t, resp.Error, tt.name)
+		assert.NotContains(t, w.Body.String(), "access_token", tt.name)
+		answers = append(answers, w.Body.String())
+	}
+
+	for i, answer := range answers {
+		assert.Equal(t, answers[0], answer, "%s answered unlike %s", tests[i].name, tests[0].name)
+	}
+}
+
+// TestRefreshRejectsUnreadableBodies checks that refresh reads its body like
+// login: 415 unless it is declared as JSON, 413 when far too large, 400 when
+// it does not decode - and none of them carries an access token, not even when
+// a valid refresh token decoded before the error.
+func TestRefreshRejectsUnreadableBodies(t *testing.T) {
+	s, tokens := newAuthServer(t)
+	refresh, err := tokens.Issue("admin", auth.RoleAdmin, auth.Refresh)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		want        int
+	}{
+		{"text/plain", "text/plain", refreshBody(refresh), http.StatusUnsupportedMediaType},
+		{"huge body", "application/json", `{"refresh_token":"` + strings.Repeat("t", 1<<20) + `"}`, http.StatusRequestEntityTooLarge},
+		{"a valid token and a field of the wrong type", "application/json", fmt.Sprintf(`{"refresh_token":%q,"refresh_token":1}`, refresh), http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := postAs(s.refresh, tt.contentType, tt.body)
+
+			assert.Equal(t, tt.want, w.Code, w.Body.String())
+			assert.NotContains(t, w.Body.String(), "access_token")
 		})
 	}
 }

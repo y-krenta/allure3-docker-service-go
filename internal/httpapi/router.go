@@ -18,6 +18,7 @@ const (
 	configEndpoint   = "/config"
 	versionEndpoint  = "/version"
 	loginEndpoint    = "/auth/login"
+	refreshEndpoint  = "/auth/refresh"
 )
 
 // Routes builds the HTTP handler for the whole service: it registers every
@@ -31,9 +32,11 @@ const (
 //   - GetHead answers HEAD on GET routes. It must come after CleanPath, which
 //     skips cleaning once GetHead has set the route path.
 //
-// The login route exists only on a Server that EnableAuth was called on.
-// Without auth it answers 404 like any unknown path, rather than reaching a
-// handler with no users to check against.
+// The login and refresh routes exist only on a Server that EnableAuth was
+// called on. Without auth they answer 404 like any unknown path, rather than
+// reaching a handler with no users to check against. Both sit outside the
+// role groups: login has no token yet, and refresh carries a refresh token,
+// which requireRole would refuse as not an access one.
 //
 // With auth, every other route sits in one of two groups. Every GET but
 // health is for a viewer or an admin; every POST and DELETE, being all that
@@ -55,6 +58,7 @@ func (s *Server) Routes() http.Handler {
 	r.Get(healthEndpoint, s.healthCheck)
 	if s.users != nil {
 		r.Post(loginEndpoint, s.login)
+		r.Post(refreshEndpoint, s.refresh)
 	}
 
 	r.Group(func(r chi.Router) {
