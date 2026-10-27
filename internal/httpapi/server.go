@@ -49,9 +49,11 @@ type reportGenerator interface {
 // endpoint is a chosen subset, not a dump - config.Config also holds the
 // projects directory and the Allure binary path, which describe the host's
 // filesystem and are nobody's business outside the process. Settings that are
-// parsed but not yet acted on (security, TLS, dev mode, storage optimisation)
-// stay out too: reporting them would state a behaviour the service does not
-// have. Each belongs here once its code exists.
+// parsed but not yet acted on (TLS, dev mode, storage optimisation) stay out
+// too: reporting them would state a behaviour the service does not have. Each
+// belongs here once its code exists. Security is reported, but not from here:
+// getConfig reads it off the Server itself, which is the only place that knows
+// whether auth was really enabled.
 //
 // The type carries no json tags: it is what the server holds, not what the
 // endpoint sends. getConfig converts it to configResponse, which is where the

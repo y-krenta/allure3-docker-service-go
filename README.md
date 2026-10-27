@@ -303,7 +303,7 @@ curl -s http://localhost:5050/health
 # service is ok
 
 curl -s http://localhost:5050/config
-# {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0}
+# {"keep_history":true,"keep_history_latest":60,"check_results_every_seconds":0,"security_enabled":false}
 
 curl -s http://localhost:5050/version
 # {"allure_version":"3.20.0","service_version":"0.4.1"}

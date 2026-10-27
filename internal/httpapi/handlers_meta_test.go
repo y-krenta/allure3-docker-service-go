@@ -15,7 +15,7 @@ import (
 
 func TestGetConfig(t *testing.T) {
 
-	wantKeys := []string{"check_results_every_seconds", "keep_history", "keep_history_latest"}
+	wantKeys := []string{"check_results_every_seconds", "keep_history", "keep_history_latest", "security_enabled"}
 
 	t.Run("reports the settings the server was built with", func(t *testing.T) {
 		s := NewServer("unused-dir", nil, RuntimeConfig{
@@ -37,6 +37,18 @@ func TestGetConfig(t *testing.T) {
 		assert.Equal(t, true, got["keep_history"])
 		assert.Equal(t, float64(60), got["keep_history_latest"])
 		assert.Equal(t, float64(30), got["check_results_every_seconds"])
+		assert.Equal(t, false, got["security_enabled"])
+	})
+
+	t.Run("security is reported once auth is enabled", func(t *testing.T) {
+		s, _ := newAuthServer(t)
+
+		w := httptest.NewRecorder()
+		s.getConfig(w, httptest.NewRequest(http.MethodGet, "/config", nil))
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
+		assert.Equal(t, true, got["security_enabled"])
 	})
 
 	t.Run("zero values are published, not omitted", func(t *testing.T) {
