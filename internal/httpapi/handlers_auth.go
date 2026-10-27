@@ -1,18 +1,17 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"log/slog"
-	"mime"
 	"net/http"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
 )
 
-// maxLoginBytes caps a login body. A name and a password fit in a few
-// hundred bytes, and bcrypt reads only 72 of the password; the endpoint is
-// open before any login, so nothing larger is read at all.
-const maxLoginBytes = 4 << 10
+// maxAuthBodyBytes caps the body of the auth endpoints. A name and a
+// password, or a refresh token, fit in a few hundred bytes, and bcrypt reads
+// only 72 of a password; the endpoints are open before any login, so nothing
+// larger is read at all.
+const maxAuthBodyBytes = 4 << 10
 
 // tokenResponse is the body that hands out tokens. Field names follow
 // OAuth 2.0 (RFC 6749, section 5.1): expires_in is the access token's
@@ -29,31 +28,20 @@ type tokenResponse struct {
 // the answer does not tell which names exist. The response is no-store: it
 // carries secrets no cache may keep.
 //
-// A body not declared as application/json is a 415 before it is read. That
-// closes login CSRF: another site's form can post the same JSON as
-// text/plain without a CORS preflight and log the visitor in as the
-// attacker, but a browser sends application/json across origins only after
-// a preflight, which this service never answers.
+// The body is read by readJSON, so one not declared as application/json is a
+// 415 before it is read. That closes login CSRF: another site's form can post
+// the same JSON as text/plain without a CORS preflight and log the visitor in
+// as the attacker, but a browser sends application/json across origins only
+// after a preflight, which this service never answers.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeError(w, r, http.StatusUnsupportedMediaType, "content type must be application/json")
-		return
-	}
-
-	r.Body = http.MaxBytesReader(unwrapResponseWriter(w), r.Body, maxLoginBytes)
-
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if handleMaxBytesError(w, err) {
-			return
-		}
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+	if !readJSON(w, r, maxAuthBodyBytes, &req) {
 		return
 	}
+
 	role, ok := s.users.Check(req.Username, req.Password)
 	if !ok {
 		writeError(w, r, http.StatusUnauthorized, "invalid username or password")

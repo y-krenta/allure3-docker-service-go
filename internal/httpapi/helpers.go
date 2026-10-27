@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"log/slog"
+	"mime"
 	"net/http"
 	"time"
 
@@ -124,4 +125,29 @@ func writeError(w http.ResponseWriter, r *http.Request, status int, msg string) 
 	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
 		slog.Error("failed to encode response", "err", err, "path", r.URL.Path)
 	}
+}
+
+// readJSON decodes the request body into v, which must be a pointer, and
+// reports whether it did. A body not declared as application/json is a 415
+// before anything is read, one over limit bytes a 413 read no further, and
+// one that is not the JSON v expects a 400.
+//
+// When it reports false it has already answered the request, and the caller
+// must return without writing anything more, as with requireProjectID.
+func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, r, http.StatusUnsupportedMediaType, "content type must be application/json")
+		return false
+	}
+
+	r.Body = http.MaxBytesReader(unwrapResponseWriter(w), r.Body, limit)
+
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		if !handleMaxBytesError(w, err) {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+		}
+		return false
+	}
+	return true
 }
