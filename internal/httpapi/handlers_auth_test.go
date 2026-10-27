@@ -30,7 +30,7 @@ func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 	tokens := auth.NewTokens([]byte(testSecret), 15*time.Minute, 720*time.Hour)
 
 	s, _ := newTestServer(t)
-	s.EnableAuth(users, tokens)
+	s.EnableAuth(users, tokens, false)
 	return s, tokens
 }
 
@@ -277,14 +277,11 @@ func TestRequireRole(t *testing.T) {
 
 // TestRoutesRequireRoles checks that with auth enabled each route lets in only
 // the callers its group allows: health and login anyone, every other GET a
-// viewer or an admin, every POST and DELETE an admin alone. The table has to
-// name every route the router serves, so that a new one cannot land outside
-// the groups unnoticed.
+// viewer or an admin, every POST and DELETE an admin alone - and that with
+// public reads every GET is open to anyone while writing still takes an
+// admin. The table has to name every route the router serves, so that a new
+// one cannot land outside the groups unnoticed.
 func TestRoutesRequireRoles(t *testing.T) {
-	s, tokens := newAuthServer(t)
-	s.reports = &stubGenerator{}
-	h := s.Routes()
-
 	const (
 		public = "public"
 		read   = "read"
@@ -309,45 +306,62 @@ func TestRoutesRequireRoles(t *testing.T) {
 		"DELETE /projects/{id}":             write,
 		"DELETE /projects/{id}/results":     write,
 	}
-
-	var served []string
-	require.NoError(t, chi.Walk(h.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		served = append(served, method+" "+route)
-		return nil
-	}))
-	require.ElementsMatch(t, slices.Collect(maps.Keys(routes)), served)
-
-	issue := func(role auth.Role) string {
-		raw, err := tokens.Issue("someone", role, auth.Access)
-		require.NoError(t, err)
-		return raw
-	}
-	callers := []struct {
-		name    string
-		token   string
-		allowed []string
+	modes := []struct {
+		name        string
+		publicReads bool
+		anonymous   []string
 	}{
-		{"anonymous", "", []string{public}},
-		{"viewer", issue(auth.RoleViewer), []string{public, read}},
-		{"admin", issue(auth.RoleAdmin), []string{public, read, write}},
+		{"reads need a token", false, []string{public}},
+		{"reads are public", true, []string{public, read}},
 	}
 	paths := strings.NewReplacer("{id}", "demo", "*", "latest/index.html")
 
-	for route, group := range routes {
-		method, path, _ := strings.Cut(route, " ")
-		for _, c := range callers {
-			t.Run(c.name+" "+route, func(t *testing.T) {
-				r := httptest.NewRequest(method, paths.Replace(path), nil)
-				if c.token != "" {
-					r.Header.Set("Authorization", "Bearer "+c.token)
+	for _, m := range modes {
+		t.Run(m.name, func(t *testing.T) {
+			s, tokens := newAuthServer(t)
+			s.EnableAuth(s.users, tokens, m.publicReads)
+			s.reports = &stubGenerator{}
+			h := s.Routes()
+
+			var served []string
+			require.NoError(t, chi.Walk(h.(chi.Routes), func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
+				served = append(served, method+" "+route)
+				return nil
+			}))
+			require.ElementsMatch(t, slices.Collect(maps.Keys(routes)), served)
+
+			issue := func(role auth.Role) string {
+				raw, err := tokens.Issue("someone", role, auth.Access)
+				require.NoError(t, err)
+				return raw
+			}
+			callers := []struct {
+				name    string
+				token   string
+				allowed []string
+			}{
+				{"anonymous", "", m.anonymous},
+				{"viewer", issue(auth.RoleViewer), []string{public, read}},
+				{"admin", issue(auth.RoleAdmin), []string{public, read, write}},
+			}
+
+			for route, group := range routes {
+				method, path, _ := strings.Cut(route, " ")
+				for _, c := range callers {
+					t.Run(c.name+" "+route, func(t *testing.T) {
+						r := httptest.NewRequest(method, paths.Replace(path), nil)
+						if c.token != "" {
+							r.Header.Set("Authorization", "Bearer "+c.token)
+						}
+						w := httptest.NewRecorder()
+
+						h.ServeHTTP(w, r)
+
+						denied := w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden
+						assert.Equal(t, !slices.Contains(c.allowed, group), denied, "%d %s", w.Code, w.Body.String())
+					})
 				}
-				w := httptest.NewRecorder()
-
-				h.ServeHTTP(w, r)
-
-				denied := w.Code == http.StatusUnauthorized || w.Code == http.StatusForbidden
-				assert.Equal(t, !slices.Contains(c.allowed, group), denied, "%d %s", w.Code, w.Body.String())
-			})
-		}
+			}
+		})
 	}
 }

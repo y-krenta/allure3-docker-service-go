@@ -72,6 +72,7 @@ type Server struct {
 	versions    Versions
 	users       *auth.Users
 	tokens      *auth.Tokens
+	publicReads bool
 }
 
 // Versions carries the two version strings the meta endpoints report. It
@@ -99,12 +100,16 @@ func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig, v
 	return &Server{projectsDir: projectsDir, reports: reports, cfg: cfg, versions: versions}
 }
 
-// EnableAuth turns on password login: users are who may log in and with what
-// role, tokens what signs the tokens they get. main calls it before Routes
-// when SECURITY_ENABLED is set; a Server it is never called on runs without
-// auth. It is a method rather than a NewServer parameter so that the many
-// servers built without auth stay as they are.
-func (s *Server) EnableAuth(users *auth.Users, tokens *auth.Tokens) {
+// EnableAuth turns on password login and the roles: users are who may log in
+// and with what role, tokens what signs the tokens they get, and publicReads
+// opens every GET to anyone while writing still takes an admin. main calls it
+// before Routes when SECURITY_ENABLED is set; a Server it is never called on
+// runs without auth. It is a method rather than a NewServer parameter so that
+// the many servers built without auth stay as they are, and publicReads is a
+// parameter of it rather than a method of its own because it means nothing
+// without auth.
+func (s *Server) EnableAuth(users *auth.Users, tokens *auth.Tokens, publicReads bool) {
 	s.users = users
 	s.tokens = tokens
+	s.publicReads = publicReads
 }

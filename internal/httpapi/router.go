@@ -37,8 +37,9 @@ const (
 //
 // With auth, every other route sits in one of two groups. Every GET but
 // health is for a viewer or an admin; every POST and DELETE, being all that
-// changes data, for an admin alone. Without auth the groups carry no
-// middleware and every route is open.
+// changes data, for an admin alone. With public reads the GET group carries
+// no middleware, so a token sent there is not even read. Without auth neither
+// group does and every route is open.
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(
@@ -57,7 +58,7 @@ func (s *Server) Routes() http.Handler {
 	}
 
 	r.Group(func(r chi.Router) {
-		if s.tokens != nil {
+		if s.tokens != nil && !s.publicReads {
 			r.Use(s.requireRole(auth.RoleAdmin, auth.RoleViewer))
 		}
 		r.Get(projectsEndpoint, s.listProjects)
