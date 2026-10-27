@@ -19,8 +19,8 @@ func openTestDenylist(t *testing.T, path string) *Denylist {
 	return d
 }
 
-// TestDenylistRevokesOnlyWhatWasRevoked checks that a jti is reported revoked
-// once Revoke was called on it, and that no other jti is - including on a
+// TestDenylistRevokesOnlyWhatWasRevoked checks that each jti Revoke was
+// called on is reported revoked, and that no other jti is - including on a
 // denylist nothing has been revoked on yet.
 func TestDenylistRevokesOnlyWhatWasRevoked(t *testing.T) {
 	d := openTestDenylist(t, filepath.Join(t.TempDir(), "revoked.db"))
@@ -30,14 +30,13 @@ func TestDenylistRevokesOnlyWhatWasRevoked(t *testing.T) {
 	assert.False(t, revoked)
 
 	require.NoError(t, d.Revoke("first", time.Now().Add(time.Hour)))
+	require.NoError(t, d.Revoke("second", time.Now().Add(time.Hour)))
 
-	revoked, err = d.Revoked("first")
-	require.NoError(t, err)
-	assert.True(t, revoked)
-
-	revoked, err = d.Revoked("second")
-	require.NoError(t, err)
-	assert.False(t, revoked)
+	for jti, want := range map[string]bool{"first": true, "second": true, "third": false} {
+		revoked, err := d.Revoked(jti)
+		require.NoError(t, err)
+		assert.Equal(t, want, revoked, jti)
+	}
 }
 
 // TestDenylistSurvivesReopening checks that a revocation is kept in the file:
