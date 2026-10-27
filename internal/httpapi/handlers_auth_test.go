@@ -123,7 +123,8 @@ func TestLoginRejectsBadCredentials(t *testing.T) {
 
 // TestLoginRejectsUnreadableBodies checks that a body that is not the expected
 // JSON is a 400, and one far larger than any name and password a 413 read no
-// further: the endpoint is open to anyone, before any login.
+// further: the endpoint is open to anyone, before any login. Neither carries a
+// token, not even when the right name and password decoded before the error.
 func TestLoginRejectsUnreadableBodies(t *testing.T) {
 	s, _ := newAuthServer(t)
 
@@ -134,6 +135,7 @@ func TestLoginRejectsUnreadableBodies(t *testing.T) {
 	}{
 		{"truncated JSON", `{"username":`, http.StatusBadRequest},
 		{"not JSON", `username=admin&password=admin-pass`, http.StatusBadRequest},
+		{"the right credentials and a field of the wrong type", `{"username":"admin","password":"admin-pass","username":1}`, http.StatusBadRequest},
 		{"huge body", `{"username":"admin","password":"` + strings.Repeat("p", 1<<20) + `"}`, http.StatusRequestEntityTooLarge},
 	}
 
@@ -142,6 +144,7 @@ func TestLoginRejectsUnreadableBodies(t *testing.T) {
 			w := postLogin(s, tt.body)
 
 			assert.Equal(t, tt.want, w.Code, w.Body.String())
+			assert.NotContains(t, w.Body.String(), "token")
 		})
 	}
 }
@@ -176,10 +179,10 @@ func TestLoginIsRoutedOnlyWithAuth(t *testing.T) {
 }
 
 // TestLoginRequiresJSON checks that the right name and password are refused
-// with 415 and no token unless the body is declared as JSON, with a charset or
-// without, in a header that parses: another site's form can post the same
-// bytes as text/plain with no CORS preflight, and would log the visitor in as
-// whoever the attacker chose.
+// with 415 - one JSON error and no token - unless the body is declared as
+// JSON, with a charset or without, in a header that parses: another site's
+// form can post the same bytes as text/plain with no CORS preflight, and would
+// log the visitor in as whoever the attacker chose.
 func TestLoginRequiresJSON(t *testing.T) {
 	s, _ := newAuthServer(t)
 	body := `{"username":"admin","password":"admin-pass"}`
@@ -204,6 +207,10 @@ func TestLoginRequiresJSON(t *testing.T) {
 			assert.Equal(t, tt.want, w.Code, w.Body.String())
 			if tt.want != http.StatusOK {
 				assert.NotContains(t, w.Body.String(), "token")
+				var resp struct {
+					Error string `json:"error"`
+				}
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp), w.Body.String())
 			}
 		})
 	}
