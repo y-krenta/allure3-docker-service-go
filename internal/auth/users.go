@@ -75,3 +75,14 @@ func (u *Users) Check(name, password string) (Role, bool) {
 
 	return entry.role, true
 }
+
+// Role reports the role name is configured with, and false with no role for a
+// name that is not. It takes no password: it is for a caller that already
+// holds a token issued to name and needs to know whether the user, and which
+// role, still exists - a removed user's refresh token must not outlive them.
+// Unlike Check it is not constant-time, which is safe only because such a
+// token is signed by this service and so names no user it did not have.
+func (u *Users) Role(name string) (Role, bool) {
+	entry, found := u.byName[name]
+	return entry.role, found
+}

@@ -118,3 +118,23 @@ func TestAddRejectsUnusablePasswords(t *testing.T) {
 		})
 	}
 }
+
+// TestRoleReportsWhoIsConfigured checks that Role gives each added user's
+// role, and for a name never added reports false with no role.
+func TestRoleReportsWhoIsConfigured(t *testing.T) {
+	users := newTestUsers(t)
+	require.NoError(t, users.Add("admin", "admin-pass", RoleAdmin))
+	require.NoError(t, users.Add("viewer", "viewer-pass", RoleViewer))
+
+	role, ok := users.Role("admin")
+	assert.True(t, ok)
+	assert.Equal(t, RoleAdmin, role)
+
+	role, ok = users.Role("viewer")
+	assert.True(t, ok)
+	assert.Equal(t, RoleViewer, role)
+
+	role, ok = users.Role("root")
+	assert.False(t, ok)
+	assert.Empty(t, role)
+}
