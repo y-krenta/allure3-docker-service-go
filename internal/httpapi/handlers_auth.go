@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"log/slog"
+	"mime"
 	"net/http"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
@@ -27,7 +28,19 @@ type tokenResponse struct {
 // check - wrong password, unknown name, no password - is the same 401, so
 // the answer does not tell which names exist. The response is no-store: it
 // carries secrets no cache may keep.
+//
+// A body not declared as application/json is a 415 before it is read. That
+// closes login CSRF: another site's form can post the same JSON as
+// text/plain without a CORS preflight and log the visitor in as the
+// attacker, but a browser sends application/json across origins only after
+// a preflight, which this service never answers.
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, r, http.StatusUnsupportedMediaType, "content type must be application/json")
+		return
+	}
+
 	r.Body = http.MaxBytesReader(unwrapResponseWriter(w), r.Body, maxLoginBytes)
 
 	var req struct {

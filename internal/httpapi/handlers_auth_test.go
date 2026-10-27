@@ -30,7 +30,15 @@ func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 }
 
 func postLogin(s *Server, body string) *httptest.ResponseRecorder {
-	return callWithPath(s.login, http.MethodPost, "/auth/login", strings.NewReader(body), nil)
+	return postLoginAs(s, "application/json", body)
+}
+
+func postLoginAs(s *Server, contentType, body string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+	r.Header.Set("Content-Type", contentType)
+	w := httptest.NewRecorder()
+	s.login(w, r)
+	return w
 }
 
 type loginResponse struct {
@@ -143,7 +151,9 @@ func TestLoginIsRoutedOnlyWithAuth(t *testing.T) {
 		s, _ := newAuthServer(t)
 		w := httptest.NewRecorder()
 
-		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body)))
+		r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		s.Routes().ServeHTTP(w, r)
 
 		assert.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	})
@@ -152,8 +162,39 @@ func TestLoginIsRoutedOnlyWithAuth(t *testing.T) {
 		s, _ := newTestServer(t)
 		w := httptest.NewRecorder()
 
-		s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body)))
+		r := httptest.NewRequest(http.MethodPost, "/auth/login", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		s.Routes().ServeHTTP(w, r)
 
 		assert.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
 	})
+}
+
+// TestLoginRequiresJSON checks that the right name and password are refused
+// with 415 unless the body is declared as JSON, with a charset or without:
+// another site's form can post the same bytes as text/plain with no CORS
+// preflight, and would log the visitor in as whoever the attacker chose.
+func TestLoginRequiresJSON(t *testing.T) {
+	s, _ := newAuthServer(t)
+	body := `{"username":"admin","password":"admin-pass"}`
+
+	tests := []struct {
+		contentType string
+		want        int
+	}{
+		{"application/json", http.StatusOK},
+		{"application/json; charset=utf-8", http.StatusOK},
+		{"text/plain", http.StatusUnsupportedMediaType},
+		{"application/x-www-form-urlencoded", http.StatusUnsupportedMediaType},
+		{"multipart/form-data; boundary=x", http.StatusUnsupportedMediaType},
+		{"", http.StatusUnsupportedMediaType},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.contentType, func(t *testing.T) {
+			w := postLoginAs(s, tt.contentType, body)
+
+			assert.Equal(t, tt.want, w.Code, w.Body.String())
+		})
+	}
 }
