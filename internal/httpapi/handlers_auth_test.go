@@ -15,6 +15,8 @@ import (
 	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
 )
 
+const testSecret = "0123456789abcdef0123456789abcdef"
+
 func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 	t.Helper()
 
@@ -22,7 +24,7 @@ func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 	require.NoError(t, err)
 	require.NoError(t, users.Add("admin", "admin-pass", auth.RoleAdmin))
 	require.NoError(t, users.Add("viewer", "viewer-pass", auth.RoleViewer))
-	tokens := auth.NewTokens([]byte("0123456789abcdef0123456789abcdef"), 15*time.Minute, 720*time.Hour)
+	tokens := auth.NewTokens([]byte(testSecret), 15*time.Minute, 720*time.Hour)
 
 	s, _ := newTestServer(t)
 	s.EnableAuth(users, tokens)
@@ -199,6 +201,72 @@ func TestLoginRequiresJSON(t *testing.T) {
 			assert.Equal(t, tt.want, w.Code, w.Body.String())
 			if tt.want != http.StatusOK {
 				assert.NotContains(t, w.Body.String(), "token")
+			}
+		})
+	}
+}
+
+// TestRequireRole checks that the role middleware lets a request through only
+// with an access token of an allowed role in a Bearer header: any other token,
+// or none, is a 401 announcing the Bearer scheme, a valid token of another
+// role is a 403, and neither reaches the handler.
+func TestRequireRole(t *testing.T) {
+	s, tokens := newAuthServer(t)
+	expired := auth.NewTokens([]byte(testSecret), -time.Minute, 720*time.Hour)
+	foreign := auth.NewTokens([]byte("fedcba9876543210fedcba9876543210"), 15*time.Minute, 720*time.Hour)
+
+	issue := func(tk *auth.Tokens, role auth.Role, typ auth.TokenType) string {
+		raw, err := tk.Issue("someone", role, typ)
+		require.NoError(t, err)
+		return raw
+	}
+	admin := issue(tokens, auth.RoleAdmin, auth.Access)
+	viewer := issue(tokens, auth.RoleViewer, auth.Access)
+
+	write := []auth.Role{auth.RoleAdmin}
+	read := []auth.Role{auth.RoleAdmin, auth.RoleViewer}
+
+	tests := []struct {
+		name          string
+		authorization string
+		allowed       []auth.Role
+		want          int
+	}{
+		{"admin on a write route", "Bearer " + admin, write, http.StatusOK},
+		{"admin on a read route", "Bearer " + admin, read, http.StatusOK},
+		{"viewer on a read route", "Bearer " + viewer, read, http.StatusOK},
+		{"scheme in lower case", "bearer " + admin, write, http.StatusOK},
+		{"viewer on a write route", "Bearer " + viewer, write, http.StatusForbidden},
+		{"no header", "", read, http.StatusUnauthorized},
+		{"token without a scheme", admin, read, http.StatusUnauthorized},
+		{"basic credentials", "Basic YWRtaW46YWRtaW4tcGFzcw==", read, http.StatusUnauthorized},
+		{"token under another scheme", "Token " + admin, read, http.StatusUnauthorized},
+		{"scheme without a token", "Bearer ", read, http.StatusUnauthorized},
+		{"not a token", "Bearer not-a-jwt", read, http.StatusUnauthorized},
+		{"refresh token", "Bearer " + issue(tokens, auth.RoleAdmin, auth.Refresh), read, http.StatusUnauthorized},
+		{"expired token", "Bearer " + issue(expired, auth.RoleAdmin, auth.Access), read, http.StatusUnauthorized},
+		{"token signed with another key", "Bearer " + issue(foreign, auth.RoleAdmin, auth.Access), read, http.StatusUnauthorized},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true })
+			r := httptest.NewRequest(http.MethodGet, "/projects", nil)
+			if tt.authorization != "" {
+				r.Header.Set("Authorization", tt.authorization)
+			}
+			w := httptest.NewRecorder()
+
+			s.requireRole(tt.allowed...)(next).ServeHTTP(w, r)
+
+			assert.Equal(t, tt.want, w.Code, w.Body.String())
+			assert.Equal(t, tt.want == http.StatusOK, called, "handler reached")
+			if tt.want == http.StatusUnauthorized {
+				assert.True(t, strings.HasPrefix(w.Result().Header.Get("WWW-Authenticate"), "Bearer"), w.Result().Header)
+			}
+			if tt.want != http.StatusOK {
+				assert.Equal(t, "application/json", w.Result().Header.Get("Content-Type"))
 			}
 		})
 	}
