@@ -18,8 +18,8 @@ type Config struct {
 	// Port is the port the HTTP server listens on.
 	Port string `env:"PORT" envDefault:"5050"`
 
-	// SecurityEnable turns on JWT auth; not implemented yet, so main refuses
-	// to start with it set.
+	// SecurityEnable turns on JWT auth: login, and roles on every route but
+	// health and login.
 	SecurityEnable bool `env:"SECURITY_ENABLED"`
 	// SecurityUser is the admin's login name; required with SecurityEnable.
 	SecurityUser string `env:"SECURITY_USER"`

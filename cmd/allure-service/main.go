@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
 	"github.com/y-krenta/allure3-docker-service-go/internal/config"
 	"github.com/y-krenta/allure3-docker-service-go/internal/httpapi"
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
@@ -56,9 +57,7 @@ func main() {
 		log.Fatalf("invalid configuration:\n%v", err)
 	}
 	checkInterval := time.Duration(cfg.CheckResultsEverySeconds) * time.Second
-	if cfg.SecurityEnable {
-		log.Fatal("SECURITY_ENABLED is not supported")
-	}
+
 	if cfg.TLS {
 		log.Fatal("TLS is not supported")
 	}
@@ -139,6 +138,19 @@ func main() {
 		CheckResultsEvery: checkInterval,
 	}, httpapi.Versions{Allure: allureVersion, Service: serviceVersion})
 
+	if cfg.SecurityEnable {
+		users, tokens, err := newAuth(cfg)
+		if err != nil {
+			log.Fatalf("invalid security configuration: %v", err)
+		}
+
+		if u.Scheme == "http" {
+			log.Printf("[WARN] SECURITY_ENABLED with an http:// PUBLIC_BASE_URL: passwords and tokens cross the network unencrypted")
+		}
+
+		s.EnableAuth(users, tokens, cfg.MakeViewerEndpointsPublic)
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           s.Routes(),
@@ -179,4 +191,31 @@ func describeHeap(mb int) string {
 		return "left to Node"
 	}
 	return strconv.Itoa(mb) + " MB"
+}
+
+// newAuth builds what EnableAuth takes from the configuration: the admin, the
+// viewer if one is configured, and tokens signed with JWT_SECRET_KEY under
+// the configured TTLs. It relies on config.Load having checked that the
+// admin is set and the viewer whole or absent; what is left to fail is a
+// password bcrypt cannot take, and the error names the user, never the
+// password. It costs a bcrypt hash per user and one more for Check's dummy,
+// all at startup.
+func newAuth(cfg config.Config) (*auth.Users, *auth.Tokens, error) {
+	users, err := auth.NewUsers()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := users.Add(cfg.SecurityUser, cfg.SecurityPass, auth.RoleAdmin); err != nil {
+		return nil, nil, err
+	}
+
+	if cfg.SecurityViewerUser != "" {
+		if err := users.Add(cfg.SecurityViewerUser, cfg.SecurityViewerPass, auth.RoleViewer); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	tokens := auth.NewTokens([]byte(cfg.JWTSecretKey), cfg.AccessTokenTTL, cfg.RefreshTokenTTL)
+	return users, tokens, nil
 }
