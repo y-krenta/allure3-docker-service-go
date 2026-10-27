@@ -7,6 +7,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/httplog/v3"
+
+	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
 )
 
 // Base paths for the route groups registered in Routes.
@@ -32,6 +34,11 @@ const (
 // The login route exists only on a Server that EnableAuth was called on.
 // Without auth it answers 404 like any unknown path, rather than reaching a
 // handler with no users to check against.
+//
+// With auth, every other route sits in one of two groups. Every GET but
+// health is for a viewer or an admin; every POST and DELETE, being all that
+// changes data, for an admin alone. Without auth the groups carry no
+// middleware and every route is open.
 func (s *Server) Routes() http.Handler {
 	r := chi.NewRouter()
 	r.Use(
@@ -45,27 +52,38 @@ func (s *Server) Routes() http.Handler {
 	)
 
 	r.Get(healthEndpoint, s.healthCheck)
-	r.Get(projectsEndpoint, s.listProjects)
-	r.Get(configEndpoint, s.getConfig)
-	r.Get(versionEndpoint, s.getVersion)
-	r.Get(projectsEndpoint+"/{id}", s.getProject)
-	r.Get(projectsEndpoint+"/{id}/reports/*", s.serveProjectReport)
-	r.Get(projectsEndpoint+"/{id}/generation", s.generationStatus)
-	r.Get(projectsEndpoint+"/{id}/report/export", s.exportReport)
-	r.Get(projectsEndpoint+"/{id}/latest-report", s.latestReport)
-
-	r.Post(projectsEndpoint, s.createProject)
-	r.Post(projectsEndpoint+"/{id}/results", s.sendResults)
-	r.Post(projectsEndpoint+"/{id}/generation", s.startGeneration)
-	r.Post(projectsEndpoint+"/{id}/history/clean", s.clearHistory)
-	r.Post(projectsEndpoint+"/{id}/history/seed", s.seedHistory)
-
-	r.Delete(projectsEndpoint+"/{id}", s.deleteProject)
-	r.Delete(projectsEndpoint+"/{id}/results", s.clearResults)
-
 	if s.users != nil {
 		r.Post(loginEndpoint, s.login)
 	}
+
+	r.Group(func(r chi.Router) {
+		if s.tokens != nil {
+			r.Use(s.requireRole(auth.RoleAdmin, auth.RoleViewer))
+		}
+		r.Get(projectsEndpoint, s.listProjects)
+		r.Get(configEndpoint, s.getConfig)
+		r.Get(versionEndpoint, s.getVersion)
+		r.Get(projectsEndpoint+"/{id}", s.getProject)
+		r.Get(projectsEndpoint+"/{id}/reports/*", s.serveProjectReport)
+		r.Get(projectsEndpoint+"/{id}/generation", s.generationStatus)
+		r.Get(projectsEndpoint+"/{id}/report/export", s.exportReport)
+		r.Get(projectsEndpoint+"/{id}/latest-report", s.latestReport)
+	})
+
+	r.Group(func(r chi.Router) {
+		if s.tokens != nil {
+			r.Use(s.requireRole(auth.RoleAdmin))
+		}
+		r.Post(projectsEndpoint, s.createProject)
+		r.Post(projectsEndpoint+"/{id}/results", s.sendResults)
+		r.Post(projectsEndpoint+"/{id}/generation", s.startGeneration)
+		r.Post(projectsEndpoint+"/{id}/history/clean", s.clearHistory)
+		r.Post(projectsEndpoint+"/{id}/history/seed", s.seedHistory)
+
+		r.Delete(projectsEndpoint+"/{id}", s.deleteProject)
+		r.Delete(projectsEndpoint+"/{id}/results", s.clearResults)
+	})
+
 	return r
 }
 
