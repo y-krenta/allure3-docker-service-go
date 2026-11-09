@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -76,4 +77,33 @@ func (d *Denylist) Revoked(jti string) (bool, error) {
 // Close releases the file and its lock. Revoke and Revoked fail after it.
 func (d *Denylist) Close() error {
 	return d.db.Close()
+}
+
+func (d *Denylist) Purge(now time.Time) error {
+	return d.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(revokedBucket)
+
+		// Проход 1: только читаем и запоминаем, что удалить.
+		var expired [][]byte
+		err := b.ForEach(func(k, v []byte) error {
+			// Значение записал Revoke: 8 байт big-endian unix-секунд.
+			exp := int64(binary.BigEndian.Uint64(v))
+			if exp <= now.Unix() {
+				expired = append(expired, bytes.Clone(k))
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+
+		// Проход 2: курсора уже нет, удалять можно.
+		for _, k := range expired {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		// nil → commit: все удаления попадают на диск разом.
+		return nil
+	})
 }

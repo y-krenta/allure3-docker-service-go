@@ -89,9 +89,36 @@ func TestOpenDenylistGivesUpOnALockedFile(t *testing.T) {
 	}
 }
 
-// TestDenylistFailsOnceClosed checks that Revoke and Revoked on a closed
-// denylist return an error, and Revoked no verdict, rather than pretending
-// they worked.
+// TestPurgeForgetsOnlyExpiredTokens checks that Purge drops the jti of every
+// token expired by now, however recently, and keeps every one still valid,
+// however soon it expires.
+func TestPurgeForgetsOnlyExpiredTokens(t *testing.T) {
+	d := openTestDenylist(t, filepath.Join(t.TempDir(), "revoked.db"))
+	now := time.Now()
+
+	require.NoError(t, d.Revoke("long expired", now.Add(-time.Hour)))
+	require.NoError(t, d.Revoke("just expired", now.Add(-time.Second)))
+	require.NoError(t, d.Revoke("about to expire", now.Add(time.Second)))
+	require.NoError(t, d.Revoke("fresh", now.Add(time.Hour)))
+
+	require.NoError(t, d.Purge(now))
+
+	tests := map[string]bool{
+		"long expired":    false,
+		"just expired":    false,
+		"about to expire": true,
+		"fresh":           true,
+	}
+	for jti, want := range tests {
+		revoked, err := d.Revoked(jti)
+		require.NoError(t, err)
+		assert.Equal(t, want, revoked, jti)
+	}
+}
+
+// TestDenylistFailsOnceClosed checks that Revoke, Revoked and Purge on a
+// closed denylist return an error, and Revoked no verdict, rather than
+// pretending they worked.
 func TestDenylistFailsOnceClosed(t *testing.T) {
 	d, err := OpenDenylist(filepath.Join(t.TempDir(), "revoked.db"), time.Second)
 	require.NoError(t, err)
@@ -102,4 +129,6 @@ func TestDenylistFailsOnceClosed(t *testing.T) {
 	revoked, err := d.Revoked("first")
 	assert.Error(t, err)
 	assert.False(t, revoked)
+
+	assert.Error(t, d.Purge(time.Now()))
 }
