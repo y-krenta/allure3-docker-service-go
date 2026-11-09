@@ -1,11 +1,22 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
 )
 
@@ -56,9 +67,7 @@ func TestRoutes(t *testing.T) {
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
 
-			if w.Code != tt.wantStatus {
-				t.Fatalf("%s %s = %d, want %d (body: %s)", tt.method, tt.target, w.Code, tt.wantStatus, w.Body)
-			}
+			require.Equal(t, tt.wantStatus, w.Code, w.Body.String())
 		})
 	}
 
@@ -69,12 +78,8 @@ func TestRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
-		if !strings.Contains(w.Body.String(), "a-result.json") {
-			t.Errorf("body = %s, want the uploaded file listed", w.Body)
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Contains(t, w.Body.String(), "a-result.json")
 	})
 
 	t.Run("every response carries a request id", func(t *testing.T) {
@@ -82,71 +87,89 @@ func TestRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 
-		if w.Header().Get("X-Request-ID") == "" {
-			t.Error("X-Request-ID header is missing")
-		}
+		assert.NotEmpty(t, w.Header().Get("X-Request-ID"))
 	})
 }
 
-func TestRecoverer(t *testing.T) {
-	t.Run("turns a panic into 500", func(t *testing.T) {
-		h := recoverer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-			panic("boom")
-		}))
+// captureLogs sends slog's default logger into a buffer for the rest of the
+// test. Call it before s.Routes(), which takes the logger when it is built.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
 
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-		if w.Code != http.StatusInternalServerError {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
-		}
-	})
-
-	t.Run("leaves a healthy handler alone", func(t *testing.T) {
-		h := recoverer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusTeapot)
-		}))
-
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-		if w.Code != http.StatusTeapot {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusTeapot)
-		}
-	})
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
 }
 
+// logLinesWithRequestID returns the JSON log lines whose request_id is id.
+func logLinesWithRequestID(t *testing.T, logs *bytes.Buffer, id string) []map[string]any {
+	t.Helper()
+
+	var lines []map[string]any
+	for line := range strings.Lines(logs.String()) {
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &entry), line)
+		if entry["request_id"] == id {
+			lines = append(lines, entry)
+		}
+	}
+	return lines
+}
+
+// TestRoutesLogOneLinePerRequest checks that every request, a panicking one
+// included, leaves exactly one log line carrying its X-Request-ID, and that a
+// panic is answered with 500.
+func TestRoutesLogOneLinePerRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		reports    *stubGenerator
+		wantStatus int
+	}{
+		{name: "regular request", method: http.MethodGet, target: "/health", wantStatus: http.StatusOK},
+		{name: "panic", method: http.MethodPost, target: "/projects/demo/generation",
+			reports: &stubGenerator{startPanic: "boom"}, wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := captureLogs(t)
+			s, _ := newTestServer(t, "demo")
+			if tt.reports != nil {
+				s.reports = tt.reports
+			}
+
+			w := httptest.NewRecorder()
+			s.Routes().ServeHTTP(w, httptest.NewRequest(tt.method, tt.target, nil))
+
+			require.Equal(t, tt.wantStatus, w.Code, w.Body.String())
+
+			id := w.Header().Get("X-Request-ID")
+			require.NotEmpty(t, id)
+			assert.Len(t, logLinesWithRequestID(t, logs, id), 1, logs.String())
+		})
+	}
+}
+
+// TestRequestID checks that every response carries its own UUIDv7 in
+// X-Request-ID.
 func TestRequestID(t *testing.T) {
-	var seen string
+	h := requestID(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
-	h := requestID(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		seen, _ = r.Context().Value(requestIDKey).(string)
-	}))
+	ids := make([]string, 2)
+	for i := range ids {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
+		ids[i] = w.Header().Get("X-Request-ID")
 
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
-
-	header := w.Header().Get("X-Request-ID")
-	if header == "" {
-		t.Fatal("X-Request-ID header is missing")
+		id, err := uuid.Parse(ids[i])
+		require.NoError(t, err, ids[i])
+		assert.Equal(t, uuid.Version(7), id.Version())
 	}
-	if seen != header {
-		t.Errorf("context id = %q, header = %q, want them equal", seen, header)
-	}
-}
-
-func TestStatusRecorder(t *testing.T) {
-	w := httptest.NewRecorder()
-	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-
-	rec.WriteHeader(http.StatusTeapot)
-
-	if rec.status != http.StatusTeapot {
-		t.Errorf("recorded status = %d, want %d", rec.status, http.StatusTeapot)
-	}
-	if w.Code != http.StatusTeapot {
-		t.Errorf("delegated status = %d, want %d", w.Code, http.StatusTeapot)
-	}
+	assert.NotEqual(t, ids[0], ids[1])
 }
 
 // http.MaxBytesReader finds the connection's writer by a bare type assertion,
@@ -154,12 +177,106 @@ func TestStatusRecorder(t *testing.T) {
 // upload to get a clean 413.
 func TestUnwrapResponseWriter(t *testing.T) {
 	inner := httptest.NewRecorder()
-	wrapped := &statusRecorder{ResponseWriter: &statusRecorder{ResponseWriter: inner}}
+	wrapped := middleware.NewWrapResponseWriter(middleware.NewWrapResponseWriter(inner, 1), 1)
 
-	if got := unwrapResponseWriter(wrapped); got != http.ResponseWriter(inner) {
-		t.Errorf("unwrapResponseWriter returned %T, want the innermost *httptest.ResponseRecorder", got)
+	assert.Same(t, inner, unwrapResponseWriter(wrapped))
+	assert.Same(t, inner, unwrapResponseWriter(inner))
+}
+
+// writeReportFile puts content at rel inside the project's published report.
+func writeReportFile(t *testing.T, dir, id, rel, content string) {
+	t.Helper()
+
+	p := filepath.Join(projects.LatestReportDir(dir, id), filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+}
+
+// TestRoutesAnswerHeadOnGetRoutes checks that GET routes also answer HEAD:
+// probes and caches send HEAD, and a router that wants it registered
+// separately answers them 405.
+func TestRoutesAnswerHeadOnGetRoutes(t *testing.T) {
+	s, dir := newTestServer(t, "demo")
+	writeReportFile(t, dir, "demo", "data/summary.json", `{}`)
+	h := s.Routes()
+
+	for _, target := range []string{"/health", "//health", "/projects", "/projects/demo/reports/latest/data/summary.json"} {
+		t.Run(target, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodHead, target, nil))
+
+			assert.Equal(t, http.StatusOK, w.Code)
+		})
 	}
-	if got := unwrapResponseWriter(inner); got != http.ResponseWriter(inner) {
-		t.Errorf("unwrapResponseWriter(%T) = %T, want it returned unchanged", inner, got)
+}
+
+// TestRoutesToleratePathsWithDoubleSlashes checks that a doubled slash still
+// reaches its route. A CI script joining a base URL that ends in "/" with
+// "/projects" sends "//projects"; it must keep working once redirects, if
+// any, are followed - the way curl -L and http.Client follow them.
+func TestRoutesToleratePathsWithDoubleSlashes(t *testing.T) {
+	s, _ := newTestServer(t, "demo")
+	s.reports = &stubGenerator{}
+	srv := httptest.NewServer(s.Routes())
+	t.Cleanup(srv.Close)
+
+	tests := []struct {
+		method string
+		path   string
+		want   int
+	}{
+		{http.MethodGet, "//projects", http.StatusOK},
+		{http.MethodGet, "/projects//demo", http.StatusOK},
+		{http.MethodPost, "//projects/demo/generation", http.StatusAccepted},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			req, err := http.NewRequest(tt.method, srv.URL+tt.path, nil)
+			require.NoError(t, err)
+
+			resp, err := srv.Client().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			assert.Equal(t, tt.want, resp.StatusCode)
+		})
+	}
+}
+
+// TestRoutesServeReportFiles checks that the tail of a report URL reaches the
+// handler intact, nested directories included, and the file comes back.
+func TestRoutesServeReportFiles(t *testing.T) {
+	s, dir := newTestServer(t, "demo")
+	writeReportFile(t, dir, "demo", "data/test-results/abc.json", `{"name":"login"}`)
+
+	w := httptest.NewRecorder()
+	s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/projects/demo/reports/latest/data/test-results/abc.json", nil))
+
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	assert.JSONEq(t, `{"name":"login"}`, w.Body.String())
+}
+
+// TestRoutesKeepReportPathsInsideReports checks that ".." in a report URL
+// never serves a file from outside the project's reports directory.
+func TestRoutesKeepReportPathsInsideReports(t *testing.T) {
+	s, dir := newTestServer(t, "demo")
+	writeReportFile(t, dir, "demo", "index.html", "<html>report</html>")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("top secret"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "demo", "secret.txt"), []byte("top secret"), 0o644))
+
+	for _, target := range []string{
+		"/projects/demo/reports/../secret.txt",
+		"/projects/demo/reports/../../secret.txt",
+		"/projects/demo/reports/latest/../../secret.txt",
+		"/projects/demo/reports/latest/../../../secret.txt",
+	} {
+		t.Run(target, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			s.Routes().ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+
+			assert.NotEqual(t, http.StatusOK, w.Code)
+			assert.NotContains(t, w.Body.String(), "top secret")
+		})
 	}
 }

@@ -1,9 +1,11 @@
 package e2e
 
 import (
-	"slices"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestHistoryAccumulatesAcrossRuns(t *testing.T) {
@@ -18,44 +20,31 @@ func TestHistoryAccumulatesAcrossRuns(t *testing.T) {
 		Builds []string `json:"builds"`
 	}
 	c.getJSON("/projects/"+id, &builds)
-	if want := []string{"latest", "2", "1"}; !slices.Equal(builds.Builds, want) {
-		t.Errorf("project lists builds %v, want %v", builds.Builds, want)
-	}
+	assert.Equal(t, []string{"latest", "2", "1"}, builds.Builds)
 
 	var latest summary
 	c.getJSON("/projects/"+id+"/reports/latest/summary.json", &latest)
-	if latest.Stats.Total != 2 || latest.Stats.Passed != 2 {
-		t.Errorf("latest report counts %+v, want only the second run: 2 passed", latest.Stats)
-	}
+	assert.Equal(t, 2, latest.Stats.Total, "want only the second run")
+	assert.Equal(t, 2, latest.Stats.Passed, "want only the second run")
 
 	reportsPath := "/projects/" + id + "/reports/"
 	test2 := c.testResult(reportsPath+"latest/", "Test 2")
-	if test2.Status != "passed" {
-		t.Errorf("Test 2 in the latest report is %q, want passed", test2.Status)
-	}
-	if len(test2.History) != 1 {
-		t.Fatalf("Test 2 has %d history entries, want the one earlier run", len(test2.History))
-	}
+	assert.Equal(t, "passed", test2.Status)
+	require.Len(t, test2.History, 1, "want the one earlier run")
 	past := test2.History[0]
-	if past.Status != "failed" {
-		t.Errorf("Test 2's earlier run is %q in its history, want failed", past.Status)
-	}
+	assert.Equal(t, "failed", past.Status)
 
 	prefix := baseURL + reportsPath + "1/index.html#"
 	pastPage, ok := strings.CutPrefix(past.URL, prefix)
-	if !ok {
-		t.Fatalf("Test 2's history links to %q, want %s<test id>", past.URL, prefix)
-	}
-	if pastPage == "" {
-		t.Errorf("Test 2's history link %q names no test", past.URL)
-	}
+	require.True(t, ok, "Test 2's history links to %q, want %s<test id>", past.URL, prefix)
+	assert.NotEmpty(t, pastPage, "Test 2's history link names no test")
 	c.get(reportsPath + "1/index.html")
 
 	var first summary
 	c.getJSON(reportsPath+"1/summary.json", &first)
-	if first.Stats.Total != 3 || first.Stats.Passed != 2 || first.Stats.Failed != 1 {
-		t.Errorf("build 1 counts %+v, want the first run: 2 passed, 1 failed", first.Stats)
-	}
+	assert.Equal(t, 3, first.Stats.Total)
+	assert.Equal(t, 2, first.Stats.Passed)
+	assert.Equal(t, 1, first.Stats.Failed)
 }
 
 type testResult struct {
@@ -93,6 +82,6 @@ func (c *client) leaf(reportPath, name string) treeLeaf {
 			return leaf
 		}
 	}
-	c.t.Fatalf("no test called %q in the report at %s", name, reportPath)
+	require.FailNow(c.t, "no such test in the report", "%q at %s", name, reportPath)
 	return treeLeaf{}
 }

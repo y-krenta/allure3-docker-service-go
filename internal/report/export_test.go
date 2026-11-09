@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
@@ -20,12 +22,8 @@ func writeLatestTree(t *testing.T, g *Generator, projectID string, files map[str
 	latest := projects.LatestReportDir(g.projectsDir, projectID)
 	for name, body := range files {
 		path := filepath.Join(latest, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("creating %s: %v", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-			t.Fatalf("writing %s: %v", path, err)
-		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+		require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 	}
 }
 
@@ -33,14 +31,10 @@ func exportToReader(t *testing.T, g *Generator, projectID string) *zip.Reader {
 	t.Helper()
 
 	var buf bytes.Buffer
-	if err := g.ExportLatest(projectID, &buf); err != nil {
-		t.Fatalf("ExportLatest(%q) = %v, want nil", projectID, err)
-	}
+	require.NoError(t, g.ExportLatest(projectID, &buf))
 
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
-	if err != nil {
-		t.Fatalf("the exported bytes are not a readable zip archive: %v", err)
-	}
+	require.NoError(t, err, "the exported bytes are not a readable zip archive")
 	return zr
 }
 
@@ -49,7 +43,6 @@ func archiveNames(zr *zip.Reader) []string {
 	for _, f := range zr.File {
 		names = append(names, f.Name)
 	}
-	slices.Sort(names)
 	return names
 }
 
@@ -57,16 +50,12 @@ func readArchiveEntry(t *testing.T, zr *zip.Reader, name string) string {
 	t.Helper()
 
 	f, err := zr.Open(name)
-	if err != nil {
-		t.Fatalf("opening %q inside the archive: %v", name, err)
-	}
+	require.NoError(t, err)
 
 	defer func() { _ = f.Close() }()
 
 	b, err := io.ReadAll(f)
-	if err != nil {
-		t.Fatalf("reading %q inside the archive: %v", name, err)
-	}
+	require.NoError(t, err)
 	return string(b)
 }
 
@@ -79,16 +68,12 @@ func TestExportLatestArchivesTheWholeTreeUnderOnePrefix(t *testing.T) {
 		"data/attachments/x.txt": "attached",
 	})
 
-	got := archiveNames(exportToReader(t, g, "demo"))
-	want := []string{
+	assert.ElementsMatch(t, []string{
 		"demo-report/app.js",
 		"demo-report/data/attachments/x.txt",
 		"demo-report/index.html",
 		"demo-report/widgets/summary.json",
-	}
-	if !slices.Equal(got, want) {
-		t.Errorf("archive entries =\n%v\nwant\n%v", got, want)
-	}
+	}, archiveNames(exportToReader(t, g, "demo")))
 }
 
 func TestExportLatestPreservesFileContents(t *testing.T) {
@@ -99,12 +84,8 @@ func TestExportLatestPreservesFileContents(t *testing.T) {
 	})
 
 	zr := exportToReader(t, g, "demo")
-	if got := readArchiveEntry(t, zr, "demo-report/index.html"); got != "<html>the report</html>" {
-		t.Errorf("index.html in archive = %q", got)
-	}
-	if got := readArchiveEntry(t, zr, "demo-report/widgets/summary.json"); got != `{"passed":3}` {
-		t.Errorf("summary.json in archive = %q", got)
-	}
+	assert.Equal(t, "<html>the report</html>", readArchiveEntry(t, zr, "demo-report/index.html"))
+	assert.Equal(t, `{"passed":3}`, readArchiveEntry(t, zr, "demo-report/widgets/summary.json"))
 }
 
 func TestExportLatestSkipsDirectories(t *testing.T) {
@@ -114,11 +95,9 @@ func TestExportLatestSkipsDirectories(t *testing.T) {
 		"widgets/summary.json": `{"a":1}`,
 	})
 
-	for _, name := range archiveNames(exportToReader(t, g, "demo")) {
-		switch name {
-		case "demo-report/.", "demo-report/widgets", "demo-report/widgets/":
-			t.Errorf("archive contains a directory entry %q", name)
-		}
+	names := archiveNames(exportToReader(t, g, "demo"))
+	for _, dir := range []string{"demo-report/.", "demo-report/widgets", "demo-report/widgets/"} {
+		assert.NotContains(t, names, dir)
 	}
 }
 
@@ -126,20 +105,14 @@ func TestExportLatestNamesThePrefixAfterTheProject(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "other")
 	writeLatestTree(t, g, "other", map[string]string{"index.html": "<html>"})
 
-	got := archiveNames(exportToReader(t, g, "other"))
-	want := []string{"other-report/index.html"}
-	if !slices.Equal(got, want) {
-		t.Errorf("archive entries = %v, want %v", got, want)
-	}
+	assert.Equal(t, []string{"other-report/index.html"}, archiveNames(exportToReader(t, g, "other")))
 }
 
 func TestExportLatestWithoutAReportIsAnError(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 
 	var buf bytes.Buffer
-	if err := g.ExportLatest("demo", &buf); err == nil {
-		t.Fatal("ExportLatest on a project with no published report returned nil")
-	}
+	assert.Error(t, g.ExportLatest("demo", &buf))
 }
 
 func TestExportLatestWaitsForARunningBuild(t *testing.T) {
@@ -157,7 +130,7 @@ func TestExportLatestWaitsForARunningBuild(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("ExportLatest returned while the project lock was held: %v", err)
+		require.FailNow(t, "ExportLatest returned while the project lock was held", "err = %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -165,11 +138,9 @@ func TestExportLatestWaitsForARunningBuild(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("ExportLatest after unlock = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("ExportLatest did not proceed after the project lock was released")
+		require.FailNow(t, "ExportLatest did not proceed after the project lock was released")
 	}
 }
 
@@ -189,11 +160,9 @@ func TestExportLatestDoesNotBlockOtherProjects(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("ExportLatest(idle) = %v, want nil", err)
-		}
+		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("ExportLatest(idle) blocked while an unrelated project was building")
+		require.FailNow(t, "ExportLatest(idle) blocked while an unrelated project was building")
 	}
 }
 
@@ -210,21 +179,13 @@ func TestExportLatestAndGenerateDoNotOverlap(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	var buf bytes.Buffer
-	if err := g.ExportLatest("demo", &buf); err != nil {
-		t.Fatalf("ExportLatest = %v, want nil", err)
-	}
-	if err := <-build; err != nil {
-		t.Fatalf("Generate = %v, want nil", err)
-	}
+	require.NoError(t, g.ExportLatest("demo", &buf))
+	require.NoError(t, <-build)
 
 	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
-	if err != nil {
-		t.Fatalf("the exported bytes are not a readable zip archive: %v", err)
-	}
+	require.NoError(t, err, "the exported bytes are not a readable zip archive")
 
-	if got := readArchiveEntry(t, zr, "demo-report/index.html"); got != "fresh" {
-		t.Errorf("archived index.html = %q, want the report the build published", got)
-	}
+	assert.Equal(t, "fresh", readArchiveEntry(t, zr, "demo-report/index.html"), "want the report the build published")
 }
 
 type failingWriter struct{ err error }
@@ -235,7 +196,5 @@ func TestExportLatestReportsAFailingWriter(t *testing.T) {
 	g := newTestGenerator(t, "unused-cli", "demo")
 	writeLatestTree(t, g, "demo", map[string]string{"index.html": "<html>"})
 
-	if err := g.ExportLatest("demo", failingWriter{err: io.ErrClosedPipe}); err == nil {
-		t.Fatal("ExportLatest with a failing writer returned nil")
-	}
+	assert.Error(t, g.ExportLatest("demo", failingWriter{err: io.ErrClosedPipe}))
 }

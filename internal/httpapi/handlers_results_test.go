@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -15,6 +14,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 	"github.com/y-krenta/allure3-docker-service-go/internal/report"
@@ -34,17 +36,12 @@ func multipartBody(t *testing.T, files ...uploadFile) (io.Reader, string) {
 
 	for _, f := range files {
 		part, err := w.CreateFormFile(f.field, f.name)
-		if err != nil {
-			t.Fatalf("CreateFormFile(%q, %q): %v", f.field, f.name, err)
-		}
-		if _, err := io.WriteString(part, f.content); err != nil {
-			t.Fatalf("write part %q: %v", f.name, err)
-		}
+		require.NoError(t, err)
+		_, err = io.WriteString(part, f.content)
+		require.NoError(t, err)
 	}
 
-	if err := w.Close(); err != nil {
-		t.Fatalf("close multipart writer: %v", err)
-	}
+	require.NoError(t, w.Close())
 
 	return &buf, w.FormDataContentType()
 }
@@ -54,9 +51,7 @@ func newTestServer(t *testing.T, projectIDs ...string) (*Server, string) {
 
 	dir := t.TempDir()
 	for _, id := range projectIDs {
-		if err := projects.CreateDir(dir, id); err != nil {
-			t.Fatalf("setup project %q: %v", id, err)
-		}
+		require.NoError(t, projects.CreateDir(dir, id))
 	}
 
 	return NewServer(dir, report.New(dir, "unused-cli", 0, "https://allure.example.test", 4, 0), RuntimeConfig{}, Versions{}), dir
@@ -83,26 +78,16 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", body, ct)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
-		if got := w.Header().Get("Content-Type"); got != "application/json" {
-			t.Errorf("Content-Type = %q, want application/json", got)
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+		assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
 
 		var got sendResultsResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decode response %q: %v", w.Body, err)
-		}
-		if got.Count != 2 || len(got.Files) != 2 {
-			t.Fatalf("response = %+v, want 2 processed files", got)
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
+		require.Equal(t, 2, got.Count)
+		require.Len(t, got.Files, 2)
 
 		for _, name := range []string{"a-result.json", "b-result.json"} {
-			path := filepath.Join(projects.ResultsDir(dir, "demo"), name)
-			if _, err := os.Stat(path); err != nil {
-				t.Errorf("stat %q: %v", path, err)
-			}
+			assert.FileExists(t, filepath.Join(projects.ResultsDir(dir, "demo"), name))
 		}
 	})
 
@@ -115,22 +100,14 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", body, ct)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 		var got sendResultsResponse
-		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-			t.Fatalf("decode response %q: %v", w.Body, err)
-		}
-		if got.Count != 1 {
-			t.Fatalf("processed_files_count = %d, want 1", got.Count)
-		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got), w.Body.String())
+		require.Equal(t, 1, got.Count)
 
-		path := filepath.Join(projects.ResultsDir(dir, "demo"), "empty.json")
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Errorf("empty.json still on disk (stat err = %v), want it removed", err)
-		}
+		_, err := os.Stat(filepath.Join(projects.ResultsDir(dir, "demo"), "empty.json"))
+		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 
 	t.Run("path traversal is stripped to a base name", func(t *testing.T) {
@@ -141,18 +118,11 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", body, ct)
 
-		if w.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
+		require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
-		inside := filepath.Join(projects.ResultsDir(dir, "demo"), "pwned.json")
-		if _, err := os.Stat(inside); err != nil {
-			t.Errorf("stat %q: %v", inside, err)
-		}
-		outside := filepath.Join(dir, "pwned.json")
-		if _, err := os.Stat(outside); !os.IsNotExist(err) {
-			t.Errorf("file escaped to %q (stat err = %v)", outside, err)
-		}
+		assert.FileExists(t, filepath.Join(projects.ResultsDir(dir, "demo"), "pwned.json"))
+		_, err := os.Stat(filepath.Join(dir, "pwned.json"))
+		assert.ErrorIs(t, err, os.ErrNotExist)
 	})
 
 	t.Run("rejects unusable file names", func(t *testing.T) {
@@ -163,9 +133,7 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", body, ct)
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	})
 
 	t.Run("rejects a non-multipart body", func(t *testing.T) {
@@ -173,9 +141,7 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", strings.NewReader(`{}`), "application/json")
 
-		if w.Code != http.StatusUnsupportedMediaType {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusUnsupportedMediaType)
-		}
+		assert.Equal(t, http.StatusUnsupportedMediaType, w.Code)
 	})
 
 	t.Run("rejects an invalid project id", func(t *testing.T) {
@@ -184,9 +150,7 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "BADID", body, ct)
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
-		}
+		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	t.Run("unknown project is not found", func(t *testing.T) {
@@ -195,41 +159,23 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "nosuch", body, ct)
 
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d", w.Code, http.StatusNotFound)
-		}
+		assert.Equal(t, http.StatusNotFound, w.Code)
 	})
 
 	t.Run("re-uploading a name overwrites instead of duplicating", func(t *testing.T) {
 		s, dir := newTestServer(t, "demo")
 
 		first, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"first"}`})
-		if w := do(s, "demo", first, ct); w.Code != http.StatusOK {
-			t.Fatalf("first upload: status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
+		w := do(s, "demo", first, ct)
+		require.Equal(t, http.StatusOK, w.Code, "first upload: %s", w.Body)
 
 		second, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"second"}`})
-		if w := do(s, "demo", second, ct); w.Code != http.StatusOK {
-			t.Fatalf("second upload: status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body)
-		}
+		w = do(s, "demo", second, ct)
+		require.Equal(t, http.StatusOK, w.Code, "second upload: %s", w.Body)
 
 		resultsDir := projects.ResultsDir(dir, "demo")
-
-		entries, err := os.ReadDir(resultsDir)
-		if err != nil {
-			t.Fatalf("ReadDir: %v", err)
-		}
-		if len(entries) != 1 {
-			t.Errorf("results dir holds %d entries, want 1", len(entries))
-		}
-
-		got, err := os.ReadFile(filepath.Join(resultsDir, "a-result.json"))
-		if err != nil {
-			t.Fatalf("read back: %v", err)
-		}
-		if string(got) != `{"uuid":"second"}` {
-			t.Errorf("content = %s, want the second upload to have replaced the first", got)
-		}
+		assert.Equal(t, []string{"a-result.json"}, dirEntries(t, resultsDir))
+		assert.Equal(t, `{"uuid":"second"}`, string(readFileT(t, filepath.Join(resultsDir, "a-result.json"))))
 	})
 
 	t.Run("rejects multipart without a boundary", func(t *testing.T) {
@@ -238,9 +184,7 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", body, "multipart/form-data")
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	})
 
 	t.Run("ignores parts sent under another field name", func(t *testing.T) {
@@ -249,9 +193,7 @@ func TestSendResults(t *testing.T) {
 
 		w := do(s, "demo", body, ct)
 
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusBadRequest, w.Body)
-		}
+		require.Equal(t, http.StatusBadRequest, w.Code, w.Body.String())
 	})
 }
 
@@ -262,82 +204,45 @@ func TestSendResults(t *testing.T) {
 func TestSavePart(t *testing.T) {
 	t.Run("writes the whole stream", func(t *testing.T) {
 		root, err := os.OpenRoot(t.TempDir())
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
 		n, err := savePart(root, "x.json", strings.NewReader("hello"))
-		if err != nil {
-			t.Fatalf("savePart returned unexpected error: %v", err)
-		}
-		if n != 5 {
-			t.Errorf("savePart wrote %d bytes, want 5", n)
-		}
-
-		got, err := os.ReadFile(filepath.Join(root.Name(), "x.json"))
-		if err != nil {
-			t.Fatalf("read back: %v", err)
-		}
-		if string(got) != "hello" {
-			t.Errorf("file content = %q, want %q", got, "hello")
-		}
+		require.NoError(t, err)
+		assert.EqualValues(t, 5, n)
+		assert.Equal(t, "hello", string(readFileT(t, filepath.Join(root.Name(), "x.json"))))
 	})
 
 	t.Run("removes the file when the source fails", func(t *testing.T) {
 		dir := t.TempDir()
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
 		src := io.MultiReader(strings.NewReader("partial"), errReader{})
 
-		if _, err := savePart(root, "x.json", src); err == nil {
-			t.Fatal("savePart returned nil, want error")
-		}
+		_, err = savePart(root, "x.json", src)
+		require.Error(t, err)
 
-		if _, err := os.Stat(filepath.Join(dir, "x.json")); !os.IsNotExist(err) {
-			t.Errorf("partially written file was kept (stat err = %v)", err)
-		}
-
-		if _, err := os.Stat(filepath.Join(dir, "x.json.part")); !os.IsNotExist(err) {
-			t.Errorf("temporary file was kept (stat err = %v)", err)
-		}
+		assert.Empty(t, dirEntries(t, dir), "neither the partial file nor its temporary may be kept")
 	})
 
 	t.Run("leaves no temporary behind once the file is published", func(t *testing.T) {
 		dir := t.TempDir()
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
-		if _, err := savePart(root, "x.json", strings.NewReader("hello")); err != nil {
-			t.Fatalf("savePart: %v", err)
-		}
+		_, err = savePart(root, "x.json", strings.NewReader("hello"))
+		require.NoError(t, err)
 
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			t.Fatalf("ReadDir: %v", err)
-		}
-		if len(entries) != 1 || entries[0].Name() != "x.json" {
-			names := make([]string, len(entries))
-			for i, e := range entries {
-				names[i] = e.Name()
-			}
-			t.Errorf("directory holds %v, want only x.json", names)
-		}
+		assert.Equal(t, []string{"x.json"}, dirEntries(t, dir))
 	})
 
 	t.Run("publishes the file only once all of it is there", func(t *testing.T) {
 		dir := t.TempDir()
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
 		var seenEarly bool
@@ -350,109 +255,70 @@ func TestSavePart(t *testing.T) {
 			}},
 		)
 
-		if _, err := savePart(root, "x.json", src); err != nil {
-			t.Fatalf("savePart: %v", err)
-		}
+		_, err = savePart(root, "x.json", src)
+		require.NoError(t, err)
 
-		if seenEarly {
-			t.Error("x.json was visible under its final name while still half-written")
-		}
-
-		got, err := os.ReadFile(filepath.Join(dir, "x.json"))
-		if err != nil {
-			t.Fatalf("read back: %v", err)
-		}
-		if string(got) != `{"uuid":"a"}` {
-			t.Errorf("file content = %q, want the whole stream", got)
-		}
+		assert.False(t, seenEarly, "x.json was visible under its final name while still half-written")
+		assert.Equal(t, `{"uuid":"a"}`, string(readFileT(t, filepath.Join(dir, "x.json"))))
 	})
 
 	t.Run("does not write through a symlink out of root", func(t *testing.T) {
 		dir := t.TempDir()
 		outside := filepath.Join(t.TempDir(), "escaped.json")
-		if err := os.Symlink(outside, filepath.Join(dir, "evil.json")); err != nil {
-			t.Fatalf("setup symlink: %v", err)
-		}
+		require.NoError(t, os.Symlink(outside, filepath.Join(dir, "evil.json")))
 
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
-		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err != nil {
-			t.Fatalf("savePart: %v", err)
-		}
+		_, err = savePart(root, "evil.json", strings.NewReader("x"))
+		require.NoError(t, err)
 
-		if _, err := os.Stat(outside); !os.IsNotExist(err) {
-			t.Errorf("data escaped to %q (stat err = %v)", outside, err)
-		}
+		_, err = os.Stat(outside)
+		assert.ErrorIs(t, err, os.ErrNotExist)
 
 		fi, err := os.Lstat(filepath.Join(dir, "evil.json"))
-		if err != nil {
-			t.Fatalf("Lstat: %v", err)
-		}
-		if fi.Mode()&os.ModeSymlink != 0 {
-			t.Error("evil.json is still a symlink pointing out of the root")
-		}
+		require.NoError(t, err)
+		assert.Zero(t, fi.Mode()&os.ModeSymlink, "evil.json is still a symlink pointing out of the root")
 	})
 
 	t.Run("does not write through a symlink planted under a scratch name", func(t *testing.T) {
 		dir := t.TempDir()
 		outside := filepath.Join(t.TempDir(), "escaped.json")
 
-		if err := os.Symlink(outside, filepath.Join(dir, "evil.json.part")); err != nil {
-			t.Fatalf("setup symlink: %v", err)
-		}
+		require.NoError(t, os.Symlink(outside, filepath.Join(dir, "evil.json.part")))
 
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
-		if _, err := savePart(root, "evil.json", strings.NewReader("x")); err != nil {
-			t.Fatalf("savePart: %v", err)
-		}
-		if _, err := os.Stat(outside); !os.IsNotExist(err) {
-			t.Errorf("data escaped to %q (stat err = %v)", outside, err)
-		}
-		if got := string(readFileT(t, filepath.Join(dir, "evil.json"))); got != "x" {
-			t.Errorf("evil.json = %q, want %q", got, "x")
-		}
+		_, err = savePart(root, "evil.json", strings.NewReader("x"))
+		require.NoError(t, err)
+		_, err = os.Stat(outside)
+		assert.ErrorIs(t, err, os.ErrNotExist)
+		assert.Equal(t, "x", string(readFileT(t, filepath.Join(dir, "evil.json"))))
 	})
 
 	t.Run("an empty part leaves the file already on disk alone", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, "x.json"), []byte("good"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "x.json"), []byte("good"), 0o644))
 
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
 		n, err := savePart(root, "x.json", strings.NewReader(""))
-		if err != nil || n != 0 {
-			t.Fatalf("savePart = (%d, %v), want (0, nil)", n, err)
-		}
+		require.NoError(t, err)
+		require.Zero(t, n)
 
-		if got := string(readFileT(t, filepath.Join(dir, "x.json"))); got != "good" {
-			t.Errorf("x.json = %q, want the previous content %q", got, "good")
-		}
-		if names := dirEntries(t, dir); len(names) != 1 {
-			t.Errorf("results dir holds %v, want only the published file", names)
-		}
+		assert.Equal(t, "good", string(readFileT(t, filepath.Join(dir, "x.json"))))
+		assert.Equal(t, []string{"x.json"}, dirEntries(t, dir))
 	})
 
 	t.Run("concurrent parts of one name do not interleave", func(t *testing.T) {
 		dir := t.TempDir()
 		root, err := os.OpenRoot(dir)
-		if err != nil {
-			t.Fatalf("OpenRoot: %v", err)
-		}
+		require.NoError(t, err)
 		defer func() { _ = root.Close() }()
 
 		a := strings.Repeat("a", 64<<10)
@@ -463,20 +329,15 @@ func TestSavePart(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if _, err := savePart(root, "environment.properties", strings.NewReader(content)); err != nil {
-					t.Errorf("savePart: %v", err)
-				}
+				_, err := savePart(root, "environment.properties", strings.NewReader(content))
+				assert.NoError(t, err)
 			}()
 		}
 		wg.Wait()
 
 		got := string(readFileT(t, filepath.Join(dir, "environment.properties")))
-		if got != a && got != b {
-			t.Errorf("environment.properties is neither upload whole (len %d), want one of them intact", len(got))
-		}
-		if names := dirEntries(t, dir); len(names) != 1 {
-			t.Errorf("results dir holds %v, want only the published file", names)
-		}
+		assert.True(t, got == a || got == b, "environment.properties is neither upload whole (len %d)", len(got))
+		assert.Equal(t, []string{"environment.properties"}, dirEntries(t, dir))
 	})
 }
 
@@ -484,9 +345,7 @@ func readFileT(t *testing.T, path string) []byte {
 	t.Helper()
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
-	}
+	require.NoError(t, err)
 	return data
 }
 
@@ -494,9 +353,7 @@ func dirEntries(t *testing.T, dir string) []string {
 	t.Helper()
 
 	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("reading %s: %v", dir, err)
-	}
+	require.NoError(t, err)
 	names := make([]string, len(entries))
 	for i, e := range entries {
 		names[i] = e.Name()
@@ -525,26 +382,16 @@ func TestHandleMaxBytesError(t *testing.T) {
 
 		err := fmt.Errorf("copy data: %w", &http.MaxBytesError{Limit: 1024})
 
-		if !handleMaxBytesError(w, err) {
-			t.Fatal("handleMaxBytesError returned false, want true")
-		}
-		if w.Code != http.StatusRequestEntityTooLarge {
-			t.Errorf("status = %d, want %d", w.Code, http.StatusRequestEntityTooLarge)
-		}
-		if !strings.Contains(w.Body.String(), "1024") {
-			t.Errorf("body = %q, want it to name the 1024 byte limit", w.Body)
-		}
+		require.True(t, handleMaxBytesError(w, err))
+		assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+		assert.Contains(t, w.Body.String(), "1024")
 	})
 
 	t.Run("ignores other errors and writes nothing", func(t *testing.T) {
 		w := httptest.NewRecorder()
 
-		if handleMaxBytesError(w, io.ErrUnexpectedEOF) {
-			t.Fatal("handleMaxBytesError returned true, want false")
-		}
-		if w.Body.Len() != 0 {
-			t.Errorf("body = %q, want no response written", w.Body)
-		}
+		require.False(t, handleMaxBytesError(w, io.ErrUnexpectedEOF))
+		assert.Empty(t, w.Body.String())
 	})
 }
 
@@ -598,24 +445,16 @@ func TestIdleTimeoutBody(t *testing.T) {
 			if err == io.EOF {
 				break
 			}
-			if err != nil {
-				t.Fatalf("Read: %v", err)
-			}
+			require.NoError(t, err)
 		}
 
-		if reads != 4 {
-			t.Fatalf("got %d reads, want 4", reads)
-		}
-		if len(rec.deadlines) != reads {
-			t.Fatalf("got %d deadlines for %d reads, want one per read", len(rec.deadlines), reads)
-		}
+		require.Equal(t, 4, reads)
+		require.Len(t, rec.deadlines, reads, "want one deadline per read")
 
 		for i, d := range rec.deadlines {
-			if d.Before(before.Add(idle)) {
-				t.Errorf("deadline %d = %v, want at least %v ahead", i, d, idle)
-			}
-			if i > 0 && d.Before(rec.deadlines[i-1]) {
-				t.Errorf("deadline %d moved backwards: %v after %v", i, d, rec.deadlines[i-1])
+			assert.False(t, d.Before(before.Add(idle)), "deadline %d = %v, want at least %v ahead", i, d, idle)
+			if i > 0 {
+				assert.False(t, d.Before(rec.deadlines[i-1]), "deadline %d moved backwards", i)
 			}
 		}
 	})
@@ -632,15 +471,9 @@ func TestIdleTimeoutBody(t *testing.T) {
 		}
 
 		n, err := body.Read(make([]byte, 2))
-		if !errors.Is(err, http.ErrNotSupported) {
-			t.Fatalf("Read err = %v, want %v", err, http.ErrNotSupported)
-		}
-		if n != 0 {
-			t.Errorf("Read returned %d bytes, want 0", n)
-		}
-		if src.Len() != 6 {
-			t.Errorf("source was consumed (%d bytes left of 6), want it untouched", src.Len())
-		}
+		require.ErrorIs(t, err, http.ErrNotSupported)
+		assert.Zero(t, n)
+		assert.Equal(t, 6, src.Len(), "the source must stay untouched")
 	})
 }
 
@@ -655,16 +488,9 @@ func TestSendResultsSetsReadDeadlines(t *testing.T) {
 	rec := newDeadlineRecorder()
 	s.sendResults(rec, r)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body)
-	}
-	if _, err := os.Stat(filepath.Join(projects.ResultsDir(dir, "demo"), "a-result.json")); err != nil {
-		t.Errorf("stat uploaded file: %v", err)
-	}
-
-	if len(rec.deadlines) < 2 {
-		t.Fatalf("got %d deadlines, want the probe plus at least one per-read refresh", len(rec.deadlines))
-	}
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	assert.FileExists(t, filepath.Join(projects.ResultsDir(dir, "demo"), "a-result.json"))
+	assert.GreaterOrEqual(t, len(rec.deadlines), 2, "want the probe plus at least one per-read refresh")
 }
 
 // The server's WriteTimeout counts from the request headers, so it covers the
@@ -682,16 +508,11 @@ func TestSendResultsLiftsTheWriteDeadline(t *testing.T) {
 	rec := newDeadlineRecorder()
 	s.sendResults(rec, r)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body)
-	}
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
-	if len(rec.writeDeadlines) != 1 {
-		t.Fatalf("got %d write deadlines, want exactly 1", len(rec.writeDeadlines))
-	}
-	if got, want := rec.writeDeadlines[0], before.Add(uploadWriteDeadline); got.Before(want) {
-		t.Errorf("write deadline = %v, want at least %v (uploadWriteDeadline out from the start)", got, want)
-	}
+	require.Len(t, rec.writeDeadlines, 1)
+	assert.False(t, rec.writeDeadlines[0].Before(before.Add(uploadWriteDeadline)),
+		"write deadline = %v, want uploadWriteDeadline out from the start", rec.writeDeadlines[0])
 }
 
 // A project deleted while its upload is being read gets exactly one 404, not a
@@ -701,18 +522,11 @@ func TestSendResultsProjectDeletedMidUpload(t *testing.T) {
 	body, ct := multipartBody(t, uploadFile{"files[]", "a-result.json", `{"uuid":"a"}`})
 
 	hooked := &hookReader{r: body, fn: func() {
-		if err := os.RemoveAll(filepath.Join(dir, "demo")); err != nil {
-			t.Errorf("removing the project mid-upload: %v", err)
-		}
+		assert.NoError(t, os.RemoveAll(filepath.Join(dir, "demo")))
 	}}
 
 	w := do(s, "demo", hooked, ct)
 
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusNotFound, w.Body)
-	}
-
-	if got := w.Body.String(); got != "project not found\n" {
-		t.Errorf("body = %q, want just the 404 message", got)
-	}
+	require.Equal(t, http.StatusNotFound, w.Code, w.Body.String())
+	assert.Equal(t, "project not found\n", w.Body.String())
 }

@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
@@ -26,9 +29,7 @@ func writeResultWithStatus(t *testing.T, baseDir, projectID, historyID, status s
 	}`, uuid, historyID, historyID, historyID, status)
 
 	path := filepath.Join(projects.ResultsDir(baseDir, projectID), uuid+"-result.json")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("writing result file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 
 type treeLeaf struct {
@@ -43,16 +44,12 @@ func readTreeLeaves(t *testing.T, baseDir, projectID string) map[string]treeLeaf
 
 	path := filepath.Join(projects.LatestReportDir(baseDir, projectID), "widgets", "tree.json")
 	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading tree.json: %v", err)
-	}
+	require.NoError(t, err)
 
 	var tree struct {
 		LeavesByID map[string]treeLeaf `json:"leavesById"`
 	}
-	if err := json.Unmarshal(raw, &tree); err != nil {
-		t.Fatalf("decoding tree.json: %v", err)
-	}
+	require.NoError(t, json.Unmarshal(raw, &tree))
 
 	byName := make(map[string]treeLeaf, len(tree.LeavesByID))
 	for _, leaf := range tree.LeavesByID {
@@ -69,49 +66,29 @@ func TestSeededHistoryMakesAFailureRegressed(t *testing.T) {
 	dir := t.TempDir()
 	const baseline, mr = "baseline", "mr-1"
 	for _, id := range []string{baseline, mr} {
-		if err := projects.CreateDir(dir, id); err != nil {
-			t.Fatalf("CreateDir(%q) = %v", id, err)
-		}
+		require.NoError(t, projects.CreateDir(dir, id))
 	}
 	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	writeResultWithStatus(t, dir, baseline, "steady", "passed", 1)
 	writeResultWithStatus(t, dir, baseline, "breaks", "passed", 2)
-	if err := g.Generate(t.Context(), baseline); err != nil {
-		t.Fatalf("Generate(baseline) = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), baseline))
 
-	if err := projects.SeedHistory(dir, mr, baseline); err != nil {
-		t.Fatalf("SeedHistory = %v, want nil", err)
-	}
+	require.NoError(t, projects.SeedHistory(dir, mr, baseline))
 
 	writeResultWithStatus(t, dir, mr, "steady", "passed", 3)
 	writeResultWithStatus(t, dir, mr, "breaks", "failed", 4)
-	if err := g.Generate(t.Context(), mr); err != nil {
-		t.Fatalf("Generate(mr) = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), mr))
 
 	leaves := readTreeLeaves(t, dir, mr)
 
-	broken, ok := leaves["breaks"]
-	if !ok {
-		t.Fatalf("tree.json has no leaf named %q, only %v", "breaks", leaves)
-	}
-	if broken.Transition != "regressed" {
-		t.Errorf("transition of the failing test = %q, want %q", broken.Transition, "regressed")
-	}
+	require.Contains(t, leaves, "breaks")
+	broken := leaves["breaks"]
+	assert.Equal(t, "regressed", broken.Transition)
+	assert.NotEmpty(t, broken.NodeID, "the regressed leaf carries no nodeId, so the gate cannot link to it")
 
-	if broken.NodeID == "" {
-		t.Error("the regressed leaf carries no nodeId, so the gate cannot link to it")
-	}
-
-	steady, ok := leaves["steady"]
-	if !ok {
-		t.Fatalf("tree.json has no leaf named %q, only %v", "steady", leaves)
-	}
-	if steady.Transition != "" {
-		t.Errorf("transition of the unchanged test = %q, want none", steady.Transition)
-	}
+	require.Contains(t, leaves, "steady")
+	assert.Empty(t, leaves["steady"].Transition)
 }
 
 // Against its own previous build, a test failing on two pushes to one merge
@@ -123,35 +100,22 @@ func TestReseedingKeepsASecondFailureRegressed(t *testing.T) {
 	dir := t.TempDir()
 	const baseline, mr = "baseline", "mr-1"
 	for _, id := range []string{baseline, mr} {
-		if err := projects.CreateDir(dir, id); err != nil {
-			t.Fatalf("CreateDir(%q) = %v", id, err)
-		}
+		require.NoError(t, projects.CreateDir(dir, id))
 	}
 	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 
 	writeResultWithStatus(t, dir, baseline, "breaks", "passed", 1)
-	if err := g.Generate(t.Context(), baseline); err != nil {
-		t.Fatalf("Generate(baseline) = %v, want nil", err)
-	}
+	require.NoError(t, g.Generate(t.Context(), baseline))
 
 	for push := 1; push <= 2; push++ {
-		if err := projects.ClearResults(dir, mr); err != nil {
-			t.Fatalf("push %d: ClearResults = %v, want nil", push, err)
-		}
-		if err := projects.SeedHistory(dir, mr, baseline); err != nil {
-			t.Fatalf("push %d: SeedHistory = %v, want nil", push, err)
-		}
+		require.NoError(t, projects.ClearResults(dir, mr), "push %d", push)
+		require.NoError(t, projects.SeedHistory(dir, mr, baseline), "push %d", push)
 		writeResultWithStatus(t, dir, mr, "breaks", "failed", push)
-		if err := g.Generate(t.Context(), mr); err != nil {
-			t.Fatalf("push %d: Generate = %v, want nil", push, err)
-		}
+		require.NoError(t, g.Generate(t.Context(), mr), "push %d", push)
 	}
 
-	leaf, ok := readTreeLeaves(t, dir, mr)["breaks"]
-	if !ok {
-		t.Fatal("tree.json has no leaf named \"breaks\"")
-	}
-	if leaf.Transition != "regressed" {
-		t.Errorf("transition on the second push = %q, want %q", leaf.Transition, "regressed")
-	}
+	leaves := readTreeLeaves(t, dir, mr)
+
+	require.Contains(t, leaves, "breaks")
+	assert.Equal(t, "regressed", leaves["breaks"].Transition)
 }

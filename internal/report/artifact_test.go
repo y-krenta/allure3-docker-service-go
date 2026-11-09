@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/y-krenta/allure3-docker-service-go/internal/projects"
 )
 
@@ -52,9 +55,7 @@ func writeRealResult(t *testing.T, baseDir, projectID string, n int) {
 	}`, uuid, n, n, n, testStepName)
 
 	path := filepath.Join(projects.ResultsDir(baseDir, projectID), uuid+"-result.json")
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("writing result file: %v", err)
-	}
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 
 type foundURL struct {
@@ -69,18 +70,14 @@ func generateTwice(t *testing.T) (dir, projectID string) {
 
 	dir = t.TempDir()
 	projectID = "demo"
-	if err := projects.CreateDir(dir, projectID); err != nil {
-		t.Fatalf("CreateDir(%q) = %v", projectID, err)
-	}
+	require.NoError(t, projects.CreateDir(dir, projectID))
 	for n := 1; n <= 3; n++ {
 		writeRealResult(t, dir, projectID, n)
 	}
 
 	g := New(dir, allure, testHistoryLimit, testBaseURL, testMaxBuilds, 0)
 	for build := 1; build <= 2; build++ {
-		if err := g.Generate(t.Context(), projectID); err != nil {
-			t.Fatalf("Generate (build %d) = %v, want nil", build, err)
-		}
+		require.NoError(t, g.Generate(t.Context(), projectID), "build %d", build)
 	}
 	return dir, projectID
 }
@@ -111,9 +108,7 @@ func buildReportWithHistory(t *testing.T) []foundURL {
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking the built report: %v", err)
-	}
+	require.NoError(t, err)
 	collect(projects.HistoryFile(dir, projectID))
 
 	return found
@@ -135,10 +130,8 @@ func requireTestResultURLs(t *testing.T, found []foundURL) []string {
 		}
 	}
 
-	if inTestResults == 0 {
-		t.Fatalf("no urls under data/test-results in the built report; found %d elsewhere, "+
-			"which is not the file a test's history panel reads", len(found))
-	}
+	require.NotZero(t, inTestResults, "no urls under data/test-results in the built report; found %d elsewhere, "+
+		"which is not the file a test's history panel reads", len(found))
 	sort.Strings(urls)
 	return urls
 }
@@ -150,9 +143,7 @@ func urlsInJSONFile(t *testing.T, path string) []string {
 	if os.IsNotExist(err) {
 		return nil
 	}
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
-	}
+	require.NoError(t, err)
 
 	var found []string
 	var walk func(any)
@@ -192,9 +183,7 @@ func TestGeneratedReportCarriesOnlyAbsoluteURLs(t *testing.T) {
 	urls := requireTestResultURLs(t, buildReportWithHistory(t))
 
 	for _, u := range urls {
-		if !strings.HasPrefix(u, testBaseURL+"/") {
-			t.Errorf("report url %q, want one built from the configured base %q", u, testBaseURL)
-		}
+		assert.True(t, strings.HasPrefix(u, testBaseURL+"/"), "report url %q, want one built from the configured base %q", u, testBaseURL)
 	}
 }
 
@@ -213,27 +202,19 @@ func TestGeneratedReportURLsSurviveNewURL(t *testing.T) {
 	body.WriteString("console.log(\"ok\");\n")
 
 	harness := filepath.Join(t.TempDir(), "harness.mjs")
-	if err := os.WriteFile(harness, []byte(body.String()), 0o644); err != nil {
-		t.Fatalf("writing harness: %v", err)
-	}
+	require.NoError(t, os.WriteFile(harness, []byte(body.String()), 0o644))
 
 	out, err := exec.CommandContext(t.Context(), node, harness).CombinedOutput()
-	if err != nil {
-		t.Fatalf("new URL() rejected a url the report carries, which is what kills the page:\n%s\nurls:\n%s",
-			out, strings.Join(urls, "\n"))
-	}
-	if got := strings.TrimSpace(string(out)); got != "ok" {
-		t.Errorf("harness said %q, want ok", got)
-	}
+	require.NoError(t, err, "new URL() rejected a url the report carries, which is what kills the page:\n%s\nurls:\n%s",
+		out, strings.Join(urls, "\n"))
+	assert.Equal(t, "ok", strings.TrimSpace(string(out)))
 }
 
 func TestGeneratedHistoryLinksOpenThePastReport(t *testing.T) {
 	dir, projectID := generateTwice(t)
 
 	entries, err := os.ReadDir(filepath.Join(projects.NumberedReportDir(dir, projectID, 1), "data", "test-results"))
-	if err != nil {
-		t.Fatalf("reading build 1's test results: %v", err)
-	}
+	require.NoError(t, err)
 	pastIDs := map[string]bool{}
 	for _, e := range entries {
 		pastIDs[strings.TrimSuffix(e.Name(), ".json")] = true
@@ -251,33 +232,16 @@ func TestGeneratedHistoryLinksOpenThePastReport(t *testing.T) {
 		}
 		for _, u := range urlsInJSONFile(t, path) {
 			links++
-			if id, ok := strings.CutPrefix(u, prefix); !ok || !pastIDs[id] {
-				t.Errorf("%s: history link %q, want %s<id of a test in build 1>", filepath.Base(path), u, prefix)
-			}
+			id, ok := strings.CutPrefix(u, prefix)
+			assert.True(t, ok && pastIDs[id], "%s: history link %q, want %s<id of a test in build 1>", filepath.Base(path), u, prefix)
 		}
 		return nil
 	})
-	if err != nil {
-		t.Fatalf("walking build 2's test results: %v", err)
-	}
-	if links == 0 {
-		t.Fatal("no history links in build 2's test results")
-	}
+	require.NoError(t, err)
+	require.NotZero(t, links, "no history links in build 2's test results")
 
-	want := map[string]bool{
-		reportURLFor(testBaseURL, projectID, 1): false,
-		reportURLFor(testBaseURL, projectID, 2): false,
-	}
-	for _, u := range urlsInJSONFile(t, projects.HistoryFile(dir, projectID)) {
-		if _, ok := want[u]; !ok {
-			t.Errorf("history.jsonl url %q, want one of the two builds' report urls", u)
-			continue
-		}
-		want[u] = true
-	}
-	for u, seen := range want {
-		if !seen {
-			t.Errorf("history.jsonl has no entry for %q", u)
-		}
-	}
+	want := []string{reportURLFor(testBaseURL, projectID, 1), reportURLFor(testBaseURL, projectID, 2)}
+	got := urlsInJSONFile(t, projects.HistoryFile(dir, projectID))
+	assert.Subset(t, want, got, "history.jsonl carries a url that is neither build's report")
+	assert.Subset(t, got, want, "history.jsonl misses a build's report")
 }
