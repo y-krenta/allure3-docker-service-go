@@ -96,6 +96,18 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	revoked, err := s.denylist.Revoked(claims.ID)
+	if err != nil {
+		slog.Error("failed to check refresh token revocation", "err", err)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	if revoked {
+		writeError(w, r, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
 	access, err := s.tokens.Issue(claims.Subject, role, auth.Access)
 	if err != nil {
 		slog.Error("failed to issue access token", "err", err)

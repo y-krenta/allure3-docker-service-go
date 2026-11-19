@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +32,10 @@ func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 
 	s, _ := newTestServer(t)
 	s.EnableAuth(users, tokens, false)
+	denylist, err := auth.OpenDenylist(filepath.Join(t.TempDir(), "revoked.db"), time.Second)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = denylist.Close() })
+	s.denylist = denylist
 	return s, tokens
 }
 
@@ -511,6 +516,62 @@ func TestRefreshRejectsUnreadableBodies(t *testing.T) {
 
 			assert.Equal(t, tt.want, w.Code, w.Body.String())
 			assert.NotContains(t, w.Body.String(), "access_token")
+		})
+	}
+}
+
+// TestRefreshChecksDenylist checks that revocation applies to one refresh
+// token, not every token of its user, and a storage failure issues no access.
+func TestRefreshChecksDenylist(t *testing.T) {
+	tests := []struct {
+		name     string
+		revoked  bool
+		closed   bool
+		wantCode int
+	}{
+		{"revoked token", true, false, http.StatusUnauthorized},
+		{"another token of the same user", false, false, http.StatusOK},
+		{"unavailable denylist", false, true, http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, tokens := newAuthServer(t)
+			revoked, err := tokens.Issue("admin", auth.RoleAdmin, auth.Refresh)
+			require.NoError(t, err)
+			claims, err := tokens.Parse(revoked, auth.Refresh)
+			require.NoError(t, err)
+			require.NoError(t, s.denylist.Revoke(claims.ID, claims.ExpiresAt.Time))
+
+			raw := revoked
+			if !tt.revoked {
+				raw, err = tokens.Issue("admin", auth.RoleAdmin, auth.Refresh)
+				require.NoError(t, err)
+			}
+			if tt.closed {
+				require.NoError(t, s.denylist.Close())
+			}
+
+			w := postRefresh(s, refreshBody(raw))
+
+			require.Equal(t, tt.wantCode, w.Code)
+			if tt.wantCode == http.StatusOK {
+				var resp loginResponse
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+				access, err := tokens.Parse(resp.AccessToken, auth.Access)
+				require.NoError(t, err)
+				assert.Equal(t, "admin", access.Subject)
+				return
+			}
+
+			assert.NotContains(t, w.Body.String(), "access_token")
+			if tt.wantCode == http.StatusUnauthorized {
+				invalid := postRefresh(s, refreshBody("not-a-jwt"))
+				assert.Equal(t, invalid.Body.String(), w.Body.String())
+				assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+			} else {
+				assert.Equal(t, msgInternalError+"\n", w.Body.String())
+			}
 		})
 	}
 }

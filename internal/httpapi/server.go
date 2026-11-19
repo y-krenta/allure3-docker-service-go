@@ -75,6 +75,7 @@ type Server struct {
 	users       *auth.Users
 	tokens      *auth.Tokens
 	publicReads bool
+	denylist    *auth.Denylist
 }
 
 // Versions carries the two version strings the meta endpoints report. It
