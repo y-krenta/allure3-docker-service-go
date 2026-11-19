@@ -19,6 +19,7 @@ const (
 	versionEndpoint  = "/version"
 	loginEndpoint    = "/auth/login"
 	refreshEndpoint  = "/auth/refresh"
+	logoutEndpoint   = "/auth/logout"
 )
 
 // Routes builds the HTTP handler for the whole service: it registers every
@@ -59,6 +60,7 @@ func (s *Server) Routes() http.Handler {
 	if s.users != nil {
 		r.Post(loginEndpoint, s.login)
 		r.Post(refreshEndpoint, s.refresh)
+		r.Post(logoutEndpoint, s.logout)
 	}
 
 	r.Group(func(r chi.Router) {
@@ -79,6 +81,7 @@ func (s *Server) Routes() http.Handler {
 		if s.tokens != nil {
 			r.Use(s.requireRole(auth.RoleAdmin))
 		}
+
 		r.Post(projectsEndpoint, s.createProject)
 		r.Post(projectsEndpoint+"/{id}/results", s.sendResults)
 		r.Post(projectsEndpoint+"/{id}/generation", s.startGeneration)

@@ -121,3 +121,28 @@ func (s *Server) refresh(w http.ResponseWriter, r *http.Request) {
 		ExpiresIn:   int(s.tokens.AccessTTL().Seconds()),
 	})
 }
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+
+	if !readJSON(w, r, maxAuthBodyBytes, &req) {
+		return
+	}
+
+	claims, err := s.tokens.Parse(req.RefreshToken, auth.Refresh)
+	if err != nil {
+		writeError(w, r, http.StatusUnauthorized, "invalid refresh token")
+		return
+	}
+
+	err = s.denylist.Revoke(claims.ID, claims.ExpiresAt.Time)
+	if err != nil {
+		slog.Error("failed to revoke refresh token", "err", err)
+		http.Error(w, msgInternalError, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

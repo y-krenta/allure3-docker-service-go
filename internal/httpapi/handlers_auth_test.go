@@ -322,6 +322,7 @@ func TestRoutesRequireRoles(t *testing.T) {
 		"GET /health":                       public,
 		"POST /auth/login":                  public,
 		"POST /auth/refresh":                public,
+		"POST /auth/logout":                 public,
 		"GET /projects":                     read,
 		"GET /config":                       read,
 		"GET /version":                      read,
