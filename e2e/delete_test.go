@@ -2,8 +2,9 @@ package e2e
 
 import (
 	"net/http"
-	"slices"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDeleteProjectRemovesOnlyThatProject(t *testing.T) {
@@ -21,12 +22,8 @@ func TestDeleteProjectRemovesOnlyThatProject(t *testing.T) {
 		Projects []string `json:"projects"`
 	}
 	c.getJSON("/projects", &list)
-	if slices.Contains(list.Projects, gone) {
-		t.Errorf("project list %v still has the deleted %s", list.Projects, gone)
-	}
-	if !slices.Contains(list.Projects, kept) {
-		t.Errorf("project list %v lost %s along with the deleted one", list.Projects, kept)
-	}
+	assert.NotContains(t, list.Projects, gone)
+	assert.Contains(t, list.Projects, kept)
 
 	for _, path := range []string{
 		"/projects/" + gone,

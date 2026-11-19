@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"log/slog"
+	"mime"
 	"net/http"
 	"time"
 
@@ -97,8 +98,9 @@ func requireProjectID(w http.ResponseWriter, r *http.Request) (string, bool) {
 }
 
 // writeJSON answers the request with v encoded as JSON, under an implicit 200.
-// Handlers that need another status write it themselves before calling in; a
-// status parameter would be the same value at every call site today.
+// It cannot carry any other status: a WriteHeader before the call sends the
+// headers, and the Content-Type set here would be silently dropped. An error
+// goes out through writeError instead.
 //
 // v is encoded straight into w rather than buffered first, so by the time
 // encoding can fail part of the body has been sent and the status can no
@@ -111,4 +113,41 @@ func writeJSON(w http.ResponseWriter, r *http.Request, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Error("failed to encode response", "err", err, "path", r.URL.Path)
 	}
+}
+
+// writeError answers the request with status and the JSON body
+// {"error": msg}. msg is read by the client, so it names what the client did
+// wrong and never an internal cause. Encoding failure is only logged, as in
+// writeJSON.
+func writeError(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(map[string]string{"error": msg}); err != nil {
+		slog.Error("failed to encode response", "err", err, "path", r.URL.Path)
+	}
+}
+
+// readJSON decodes the request body into v, which must be a pointer, and
+// reports whether it did. A body not declared as application/json is a 415
+// before anything is read, one over limit bytes a 413 read no further, and
+// one that is not the JSON v expects a 400.
+//
+// When it reports false it has already answered the request, and the caller
+// must return without writing anything more, as with requireProjectID.
+func readJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, r, http.StatusUnsupportedMediaType, "content type must be application/json")
+		return false
+	}
+
+	r.Body = http.MaxBytesReader(unwrapResponseWriter(w), r.Body, limit)
+
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		if !handleMaxBytesError(w, err) {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+		}
+		return false
+	}
+	return true
 }

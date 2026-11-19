@@ -12,6 +12,7 @@ type configResponse struct {
 	KeepHistory              bool `json:"keep_history"`
 	KeepHistoryLatest        int  `json:"keep_history_latest"`
 	CheckResultsEverySeconds int  `json:"check_results_every_seconds"`
+	SecurityEnabled          bool `json:"security_enabled"`
 }
 
 // versionResponse is the JSON body returned by getVersion. It carries both
@@ -31,8 +32,8 @@ type versionResponse struct {
 
 // getConfig handles GET /config. It answers with the settings the service is
 // actually running under, so a client can ask how the service will behave
-// instead of assuming: whether trend history is kept and how deep, and how
-// often the watcher picks up results on its own.
+// instead of assuming: whether trend history is kept and how deep, how often
+// the watcher picks up results on its own, and whether auth is on.
 //
 // The body is RuntimeConfig, whose doc explains why it is a chosen subset of
 // the configuration rather than all of it. The endpoint is global, not
@@ -46,6 +47,7 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		KeepHistory:              s.cfg.KeepHistory,
 		KeepHistoryLatest:        s.cfg.KeepHistoryLatest,
 		CheckResultsEverySeconds: int(s.cfg.CheckResultsEvery.Seconds()),
+		SecurityEnabled:          s.tokens != nil,
 	}
 	writeJSON(w, r, resp)
 }

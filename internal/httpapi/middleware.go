@@ -1,76 +1,20 @@
 package httpapi
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
-	"time"
+	"slices"
+	"strings"
 
+	"github.com/go-chi/httplog/v3"
 	"github.com/google/uuid"
+	"github.com/y-krenta/allure3-docker-service-go/internal/auth"
 )
 
-// contextKey is a private type for request-context keys, so this package's
-// keys can never collide with keys set by other packages.
-type contextKey string
-
-// requestIDKey is the context key under which requestID stores the
-// per-request UUID.
-const requestIDKey contextKey = `request_id`
-
-// recoverer catches panics from the wrapped handler, logs them and responds
-// with 500 instead of letting the connection die uncleanly. Should be the
-// outermost middleware so it can catch panics from everything inside it.
-func recoverer(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.Error("panic in request handler", "error", rec)
-				http.Error(w, msgInternalError, http.StatusInternalServerError)
-			}
-		}()
-
-		next.ServeHTTP(w, r)
-	})
-}
-
-// statusRecorder wraps a ResponseWriter to capture the status code written,
-// so logger can log it after the handler has already written the response.
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-// WriteHeader records code before delegating to the wrapped ResponseWriter.
-func (rec *statusRecorder) WriteHeader(code int) {
-	rec.status = code
-	rec.ResponseWriter.WriteHeader(code)
-}
-
-// Unwrap returns the wrapped ResponseWriter. http.ResponseController walks the
-// Unwrap chain to reach the writer that actually owns the connection, so
-// without this method handlers cannot adjust per-request read/write deadlines.
-func (rec *statusRecorder) Unwrap() http.ResponseWriter { return rec.ResponseWriter }
-
-// logger logs one line per request: method, path, status, request ID and
-// duration. Relies on requestID having already populated the context.
-func logger(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		id, _ := r.Context().Value(requestIDKey).(string)
-		next.ServeHTTP(rec, r)
-		slog.Info("request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"request_id", id,
-			"duration", time.Since(start))
-	})
-
-}
-
-// requestID generates a UUIDv7 per request, stores it in the request
-// context under requestIDKey and echoes it back as the X-Request-ID header.
+// requestID generates a UUIDv7 per request, echoes it back as the
+// X-Request-ID header and adds it as request_id to httplog's line for the
+// request. It must run inside httplog's middleware: outside it,
+// httplog.SetAttrs finds nothing to add to and drops the ID silently.
 func requestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, err := uuid.NewV7()
@@ -79,11 +23,39 @@ func requestID(next http.Handler) http.Handler {
 			http.Error(w, msgInternalError, http.StatusInternalServerError)
 			return
 		}
-		ctx := context.WithValue(r.Context(), requestIDKey, id.String())
-		r = r.WithContext(ctx)
+		httplog.SetAttrs(r.Context(), slog.String("request_id", id.String()))
 		w.Header().Set("X-Request-ID", id.String())
 		next.ServeHTTP(w, r)
 
 	})
 
+}
+
+// requireRole returns middleware that lets a request through to next only with
+// an access token of one of the allowed roles, sent as Authorization: Bearer.
+// No token, or one that is not a valid access token - forged, expired, a
+// refresh token, under another scheme - is a 401 carrying the
+// WWW-Authenticate challenge RFC 6750 requires, and does not say which: the
+// client has only to log in again. A valid token of another role is a 403,
+// which logging in again as the same user would not change.
+func (s *Server) requireRole(allowed ...auth.Role) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			scheme, raw, _ := strings.Cut(r.Header.Get("Authorization"), " ")
+			claims, err := s.tokens.Parse(raw, auth.Access)
+
+			if err != nil || !strings.EqualFold(scheme, "Bearer") {
+				w.Header().Set("WWW-Authenticate", "Bearer")
+				writeError(w, r, http.StatusUnauthorized, "missing or invalid token")
+				return
+			}
+
+			if !slices.Contains(allowed, claims.Role) {
+				writeError(w, r, http.StatusForbidden, "insufficient role")
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
