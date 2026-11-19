@@ -111,8 +111,13 @@ func NewServer(projectsDir string, reports reportGenerator, cfg RuntimeConfig, v
 // the many servers built without auth stay as they are, and publicReads is a
 // parameter of it rather than a method of its own because it means nothing
 // without auth.
-func (s *Server) EnableAuth(users *auth.Users, tokens *auth.Tokens, publicReads bool) {
+func (s *Server) EnableAuth(users *auth.Users,
+	tokens *auth.Tokens,
+	publicReads bool,
+	denylist *auth.Denylist,
+) {
 	s.users = users
 	s.tokens = tokens
 	s.publicReads = publicReads
+	s.denylist = denylist
 }

@@ -31,11 +31,10 @@ func newAuthServer(t *testing.T) (*Server, *auth.Tokens) {
 	tokens := auth.NewTokens([]byte(testSecret), 15*time.Minute, 720*time.Hour)
 
 	s, _ := newTestServer(t)
-	s.EnableAuth(users, tokens, false)
 	denylist, err := auth.OpenDenylist(filepath.Join(t.TempDir(), "revoked.db"), time.Second)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = denylist.Close() })
-	s.denylist = denylist
+	s.EnableAuth(users, tokens, false, denylist)
 	return s, tokens
 }
 
@@ -352,7 +351,7 @@ func TestRoutesRequireRoles(t *testing.T) {
 	for _, m := range modes {
 		t.Run(m.name, func(t *testing.T) {
 			s, tokens := newAuthServer(t)
-			s.EnableAuth(s.users, tokens, m.publicReads)
+			s.EnableAuth(s.users, tokens, m.publicReads, s.denylist)
 			s.reports = &stubGenerator{}
 			h := s.Routes()
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -148,7 +149,19 @@ func main() {
 			log.Printf("[WARN] SECURITY_ENABLED with an http:// PUBLIC_BASE_URL: passwords and tokens cross the network unencrypted")
 		}
 
-		s.EnableAuth(users, tokens, cfg.MakeViewerEndpointsPublic)
+		denylistPath := filepath.Join(cfg.ProjectsDir, ".auth", "revoked.db")
+		denylist, err := auth.OpenDenylist(denylistPath, time.Second)
+		if err != nil {
+			log.Fatalf("open auth denylist: %v", err)
+		}
+
+		defer func() {
+			if err := denylist.Close(); err != nil {
+				log.Printf("close auth denylist: %v", err)
+			}
+		}()
+
+		s.EnableAuth(users, tokens, cfg.MakeViewerEndpointsPublic, denylist)
 	}
 
 	srv := &http.Server{
